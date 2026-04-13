@@ -1,0 +1,79 @@
+name: Require Dependabot Config
+
+on:
+  pull_request:
+  merge_group:
+
+jobs:
+  check-dependabot:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Check for dependabot config
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Skip repos with no workflows
+          if [[ ! -d ".github/workflows" ]] || [[ -z "$(ls -A .github/workflows/ 2>/dev/null)" ]]; then
+            echo "✓ No workflows — skipping"
+            exit 0
+          fi
+
+          if [[ -f ".github/dependabot.yml" || -f ".github/dependabot.yaml" ]]; then
+            echo "✓ Dependabot config found"
+            exit 0
+          fi
+
+          # Single source of truth for the recommended config
+          read -r -d '' TEMPLATE << 'EOF'
+          version: 2
+          updates:
+            - package-ecosystem: 'github-actions'
+              directory: '/'
+              schedule:
+                interval: 'monthly'
+              groups:
+                actions:
+                  patterns:
+                    - '*'
+          # NOTE: add this when using Rust toolchain in the repo
+          #    ignore:
+          #      - dependency-name: 'dtolnay/rust-toolchain'
+          EOF
+
+          DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef -q '.defaultBranchRef.name')
+
+          CREATE_URL=$(python3 -c "
+          import urllib.parse, sys
+          content = sys.stdin.read().strip()
+          base = 'https://github.com/${REPO}/new/${DEFAULT_BRANCH}'
+          params = urllib.parse.urlencode({
+              'filename': '.github/dependabot.yml',
+              'value': content,
+              'message': 'chore: add dependabot configuration',
+              'description': 'Adds default Dependabot config for GitHub Actions updates'
+          })
+          print(f'{base}?{params}')
+          " <<< "$TEMPLATE")
+
+          echo "::error::Missing .github/dependabot.yml — Add it via: ${CREATE_URL}"
+
+          cat <<SUMMARY >> "$GITHUB_STEP_SUMMARY"
+          ### ❌ Missing Dependabot Configuration
+
+          This repository has workflows but no \`.github/dependabot.yml\`.
+
+          **[→ Click here to create a PR with the recommended config](${CREATE_URL})**
+
+          <details>
+          <summary>Recommended content</summary>
+
+          \`\`\`yaml
+          ${TEMPLATE}
+          \`\`\`
+          </details>
+          SUMMARY
+
+          exit 1
