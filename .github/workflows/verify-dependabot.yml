@@ -27,7 +27,7 @@ jobs:
           fi
 
           # Single source of truth for the recommended config
-          read -r -d '' TEMPLATE << 'EOF'
+          TEMPLATE=$(cat << 'EOF'
           version: 2
           updates:
             - package-ecosystem: 'github-actions'
@@ -42,6 +42,7 @@ jobs:
           #    ignore:
           #      - dependency-name: 'dtolnay/rust-toolchain'
           EOF
+          )
 
           DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef -q '.defaultBranchRef.name')
 
@@ -58,7 +59,9 @@ jobs:
           print(f'{base}?{params}')
           " <<< "$TEMPLATE")
 
-          echo "::error::Missing .github/dependabot.yml — Add it via: ${CREATE_URL}"
+          echo "::error::Missing .github/dependabot.yml — see the Job Summary for a 1-click fix."
+          echo ""
+          echo "👉 Create the file here: ${CREATE_URL}"
 
           cat <<SUMMARY >> "$GITHUB_STEP_SUMMARY"
           ### ❌ Missing Dependabot Configuration
