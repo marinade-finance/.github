@@ -13,7 +13,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Run Trivy scanner - generate report
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         env:
           TRIVY_DB_REPOSITORY: 'mirror.gcr.io/aquasec/trivy-db,ghcr.io/aquasecurity/trivy-db,public.ecr.aws/aquasecurity/trivy-db'
           TRIVY_JAVA_DB_REPOSITORY: 'mirror.gcr.io/aquasec/trivy-java-db,ghcr.io/aquasecurity/trivy-java-db,public.ecr.aws/aquasecurity/trivy-java-db'
@@ -36,7 +36,7 @@ jobs:
           fi
 
       - name: Run Trivy scanner - Fail on Critical
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         env:
           TRIVY_DB_REPOSITORY: 'mirror.gcr.io/aquasec/trivy-db,ghcr.io/aquasecurity/trivy-db,public.ecr.aws/aquasecurity/trivy-db'
           TRIVY_JAVA_DB_REPOSITORY: 'mirror.gcr.io/aquasec/trivy-java-db,ghcr.io/aquasecurity/trivy-java-db,public.ecr.aws/aquasecurity/trivy-java-db'
