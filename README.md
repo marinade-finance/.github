@@ -64,6 +64,7 @@ All inputs are optional.
 | `solana-lints-toolchain` | `nightly-2025-01-09` | Nightly for solana-lints; must match upstream `crytic/solana-lints` `rust-toolchain` |
 | `clippy-deny-warnings` | `true` | Set `false` during initial cleanup |
 | `xray-version` | `v0.0.6` | Sec3 X-Ray release tag to install |
+| `solana-lints-ref` | (pinned SHA) | `crytic/solana-lints` git ref to build lints from; bump deliberately together with `solana-lints-toolchain` |
 
 ### Shared config
 

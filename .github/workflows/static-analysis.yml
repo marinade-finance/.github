@@ -43,6 +43,11 @@ on:
         required: false
         default: "v0.0.6"
         type: string
+      solana-lints-ref:
+        description: "crytic/solana-lints git ref (commit SHA or tag) to build lints from"
+        required: false
+        default: "e0f31e2e69c62a33669bf657343eab2d94e6dc9d"
+        type: string
 
 jobs:
   detect:
@@ -145,14 +150,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ inputs.rust-toolchain }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ${{ inputs.rust-workspace }}
-
       - name: Install Sec3 X-Ray
         env:
           XRAY_VERSION: ${{ inputs.xray-version }}
@@ -190,15 +187,31 @@ jobs:
           workspaces: ${{ inputs.rust-workspace }}
 
       - name: Install dylint
-        run: cargo install cargo-dylint dylint-link --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-dylint,dylint-link
 
       - name: Clone solana-lints
-        run: git clone --depth 1 https://github.com/crytic/solana-lints.git /tmp/solana-lints
-
-      - name: Build lints
+        env:
+          REF: ${{ inputs.solana-lints-ref }}
         run: |
           set -euo pipefail
-          for lint in /tmp/solana-lints/lints/*/; do
+          git clone https://github.com/crytic/solana-lints.git /tmp/solana-lints
+          git -C /tmp/solana-lints checkout "$REF"
+
+      - name: Cache built lint libraries
+        id: lints-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/solana-lints/target/release
+          key: solana-lints-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ inputs.solana-lints-ref }}
+
+      - name: Build lints
+        if: steps.lints-cache.outputs.cache-hit != 'true'
+        working-directory: /tmp/solana-lints
+        run: |
+          set -euo pipefail
+          for lint in lints/*/; do
             (cd "$lint" && cargo build --release)
           done
 
