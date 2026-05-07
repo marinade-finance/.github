@@ -261,6 +261,14 @@ jobs:
     needs: detect
     if: needs.detect.outputs.has-anchor == 'true'
     runs-on: ubuntu-24.04
+    env:
+      # solana-lints pins an older nightly (default nightly-2025-01-09, ~1.86)
+      # than the current cargo ecosystem's MSRV — cargo-platform 0.3.3,
+      # cargo-util 0.2.23, etc. all require 1.88-1.91. Tell cargo's MSRV-aware
+      # resolver to prefer dependency versions whose declared rust-version is
+      # compatible with the active rustc, so transitives like cargo-platform
+      # resolve to a still-1.86-compatible release instead of the latest.
+      CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
     defaults:
       run:
         working-directory: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
