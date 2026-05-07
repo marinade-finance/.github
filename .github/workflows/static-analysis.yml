@@ -58,6 +58,11 @@ on:
         required: false
         default: "e0f31e2e69c62a33669bf657343eab2d94e6dc9d"
         type: string
+      cargo-dylint-version:
+        description: "cargo-dylint / dylint-link version to install. Pinned to a 4.x release because dylint 5.x's driver pulls cargo_metadata 0.23, which transitively requires cargo-platform >=0.3.2 (rustc >=1.88) — incompatible with the nightly-2025-01-09 (rustc 1.86) used to build the lints. dylint 4.1.x uses cargo_metadata 0.19 (cargo-platform 0.1.x), which builds cleanly on 1.86."
+        required: false
+        default: "4.1.2"
+        type: string
       deny-config:
         description: "URL of the cargo-deny config to use. Pin to a tag/SHA for stable behavior across reusable-workflow versions."
         required: false
@@ -261,14 +266,6 @@ jobs:
     needs: detect
     if: needs.detect.outputs.has-anchor == 'true'
     runs-on: ubuntu-24.04
-    env:
-      # solana-lints pins an older nightly (default nightly-2025-01-09, ~1.86)
-      # than the current cargo ecosystem's MSRV — cargo-platform 0.3.3,
-      # cargo-util 0.2.23, etc. all require 1.88-1.91. Tell cargo's MSRV-aware
-      # resolver to prefer dependency versions whose declared rust-version is
-      # compatible with the active rustc, so transitives like cargo-platform
-      # resolve to a still-1.86-compatible release instead of the latest.
-      CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
     defaults:
       run:
         working-directory: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
@@ -279,19 +276,18 @@ jobs:
       # makes the most-recently-installed toolchain the rustup default. We want
       # nightly as the default for the lint builds and the `cargo dylint` run,
       # but cargo-dylint/dylint-link are user-space tools that don't need
-      # nightly — and recent cargo-dylint releases require Rust ≥ 1.88, which
-      # the pinned nightly (1.86) doesn't satisfy. So: install stable, install
-      # the dylint tools while stable is the default (taiki-e/install-action
+      # nightly. Install stable, install the dylint tools (taiki-e/install-action
       # falls back to `cargo install` when no prebuilt is published, picking up
       # whatever rustc is the active default), then install nightly.
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
           toolchain: stable
 
+      # cargo-dylint pinned via input; see input description for rationale.
       - name: Install dylint
         uses: taiki-e/install-action@cca35edeb1d01366c2843b68fc3ca441446d73d3 # v2
         with:
-          tool: cargo-dylint,dylint-link
+          tool: cargo-dylint@${{ inputs.cargo-dylint-version }},dylint-link@${{ inputs.cargo-dylint-version }}
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
