@@ -125,12 +125,24 @@ The `verifiable-build` job is intentionally **not** a required check — it only
 
 ### Verifiable build
 
-For Anchor repos, `verifiable-build` runs only on push to the default branch and produces:
+For Anchor repos, `verifiable-build` runs:
 
-- a sha256 hash table for each compiled program in the run's job summary, and
-- a workflow artifact (`verifiable-build-<sha>`) containing the `target/deploy/*.so` files, retained for 90 days.
+- automatically on push to the default branch, and
+- on demand on any branch when the consumer wrapper is triggered via `workflow_dispatch` (useful for ad-hoc release builds and for testing).
+
+It produces a sha256 hash table for each compiled program in the run's job summary, and a workflow artifact (`verifiable-build-<sha>`) containing the `target/deploy/*.so` files, retained for 90 days.
 
 The build runs inside Ellipsis Labs's `solana-verifiable-build` Docker image (invoked by `solana-verify build`), so the produced binary is bit-for-bit reproducible.
+
+To enable manual triggering, add `workflow_dispatch:` to the consumer wrapper:
+
+```yaml
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:        # enables manual verifiable-build runs on any branch
+```
 
 ### Verify deployments (manual)
 
