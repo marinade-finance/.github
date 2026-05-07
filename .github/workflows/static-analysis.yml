@@ -267,6 +267,24 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
+      # Install stable first, then nightly. Order matters: dtolnay/rust-toolchain
+      # makes the most-recently-installed toolchain the rustup default. We want
+      # nightly as the default for the lint builds and the `cargo dylint` run,
+      # but cargo-dylint/dylint-link are user-space tools that don't need
+      # nightly — and recent cargo-dylint releases require Rust ≥ 1.88, which
+      # the pinned nightly (1.86) doesn't satisfy. So: install stable, install
+      # the dylint tools while stable is the default (taiki-e/install-action
+      # falls back to `cargo install` when no prebuilt is published, picking up
+      # whatever rustc is the active default), then install nightly.
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: stable
+
+      - name: Install dylint
+        uses: taiki-e/install-action@cca35edeb1d01366c2843b68fc3ca441446d73d3 # v2
+        with:
+          tool: cargo-dylint,dylint-link
+
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
           toolchain: ${{ inputs.solana-lints-toolchain }}
@@ -275,11 +293,6 @@ jobs:
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
-
-      - name: Install dylint
-        uses: taiki-e/install-action@cca35edeb1d01366c2843b68fc3ca441446d73d3 # v2
-        with:
-          tool: cargo-dylint,dylint-link
 
       - name: Clone solana-lints
         env:
