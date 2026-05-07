@@ -24,7 +24,7 @@ on:
         default: "./programs"
         type: string
       rust-toolchain:
-        description: "Toolchain for clippy and X-Ray"
+        description: "Toolchain for clippy"
         required: false
         default: "stable"
         type: string
@@ -48,41 +48,54 @@ on:
         required: false
         default: "e0f31e2e69c62a33669bf657343eab2d94e6dc9d"
         type: string
+      deny-config:
+        description: "URL of the cargo-deny config to use. Pin to a tag/SHA for stable behavior across reusable-workflow versions."
+        required: false
+        default: "https://raw.githubusercontent.com/marinade-finance/.github/main/deny.toml"
+        type: string
 
 jobs:
   detect:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       has-rust: ${{ steps.check.outputs.has-rust }}
       has-anchor: ${{ steps.check.outputs.has-anchor }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - id: check
         shell: bash
         env:
           RUN_RUST: ${{ inputs.run-rust }}
           RUN_SOLANA: ${{ inputs.run-solana }}
+          RUST_WORKSPACE: ${{ inputs.rust-workspace }}
         run: |
           set -euo pipefail
 
-          # Rust detection
+          if [[ ! -d "$RUST_WORKSPACE" ]]; then
+            echo "::error::rust-workspace '$RUST_WORKSPACE' does not exist"
+            exit 1
+          fi
+
+          # Rust detection — scoped to rust-workspace so we don't enable jobs
+          # that will then fail because the configured workspace has no manifest.
           if [[ "$RUN_RUST" == "true" ]]; then
             HAS_RUST=true
           elif [[ "$RUN_RUST" == "false" ]]; then
             HAS_RUST=false
-          elif find . -name Cargo.toml -not -path '*/target/*' -not -path '*/node_modules/*' | grep -q .; then
+          elif find "$RUST_WORKSPACE" -name Cargo.toml -not -path '*/target/*' -not -path '*/node_modules/*' | grep -q .; then
             HAS_RUST=true
           else
             HAS_RUST=false
           fi
 
-          # Anchor detection — Anchor.toml ONLY (no anchor-lang fallback)
+          # Anchor detection — Anchor.toml ONLY (no anchor-lang fallback),
+          # also scoped to rust-workspace.
           if [[ "$RUN_SOLANA" == "true" ]]; then
             HAS_ANCHOR=true
           elif [[ "$RUN_SOLANA" == "false" ]]; then
             HAS_ANCHOR=false
-          elif find . -name Anchor.toml -not -path '*/target/*' -not -path '*/node_modules/*' | grep -q .; then
+          elif find "$RUST_WORKSPACE" -name Anchor.toml -not -path '*/target/*' -not -path '*/node_modules/*' | grep -q .; then
             HAS_ANCHOR=true
           else
             HAS_ANCHOR=false
@@ -93,6 +106,7 @@ jobs:
 
           {
             echo "## Detection results"
+            echo "- Workspace: \`$RUST_WORKSPACE\`"
             echo "- Rust: \`$HAS_RUST\`"
             echo "- Anchor: \`$HAS_ANCHOR\`"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -100,19 +114,19 @@ jobs:
   clippy:
     needs: detect
     if: needs.detect.outputs.has-rust == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: ${{ inputs.rust-workspace }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
           toolchain: ${{ inputs.rust-toolchain }}
           components: clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: ${{ inputs.rust-workspace }}
 
@@ -127,17 +141,16 @@ jobs:
   cargo-deny:
     needs: detect
     if: needs.detect.outputs.has-rust == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Fetch shared deny.toml
-        run: |
-          curl -fsSL \
-            "https://raw.githubusercontent.com/marinade-finance/.github/main/deny.toml" \
-            -o "${{ runner.temp }}/deny.toml"
+      - name: Fetch cargo-deny config
+        env:
+          DENY_CONFIG_URL: ${{ inputs.deny-config }}
+        run: curl -fsSL "$DENY_CONFIG_URL" -o "${{ runner.temp }}/deny.toml"
 
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: EmbarkStudios/cargo-deny-action@5bb39ff5d5a0e94dc9e2dc94eced0c6129743a57 # v2
         with:
           command: check all
           manifest-path: ${{ inputs.rust-workspace }}/Cargo.toml
@@ -146,9 +159,9 @@ jobs:
   sec3-xray:
     needs: detect
     if: needs.detect.outputs.has-anchor == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Sec3 X-Ray
         env:
@@ -170,24 +183,24 @@ jobs:
   solana-lints:
     needs: detect
     if: needs.detect.outputs.has-anchor == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: ${{ inputs.rust-workspace }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
           toolchain: ${{ inputs.solana-lints-toolchain }}
           components: rustc-dev, llvm-tools-preview
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: ${{ inputs.rust-workspace }}
 
       - name: Install dylint
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@cca35edeb1d01366c2843b68fc3ca441446d73d3 # v2
         with:
           tool: cargo-dylint,dylint-link
 
@@ -201,7 +214,7 @@ jobs:
 
       - name: Cache built lint libraries
         id: lints-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /tmp/solana-lints/target/release
           key: solana-lints-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ inputs.solana-lints-ref }}

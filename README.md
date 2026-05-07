@@ -60,15 +60,23 @@ All inputs are optional.
 | `run-solana` | `auto` | Force on/off: `'true'` / `'false'` / `'auto'` |
 | `rust-workspace` | `.` | Path to Rust workspace root |
 | `anchor-programs-path` | `./programs` | Path Sec3 X-Ray scans |
-| `rust-toolchain` | `stable` | Toolchain for clippy and X-Ray |
+| `rust-toolchain` | `stable` | Toolchain for clippy |
 | `solana-lints-toolchain` | `nightly-2025-01-09` | Nightly for solana-lints; must match upstream `crytic/solana-lints` `rust-toolchain` |
 | `clippy-deny-warnings` | `true` | Set `false` during initial cleanup |
 | `xray-version` | `v0.0.6` | Sec3 X-Ray release tag to install |
 | `solana-lints-ref` | (pinned SHA) | `crytic/solana-lints` git ref to build lints from; bump deliberately together with `solana-lints-toolchain` |
+| `deny-config` | `…/main/deny.toml` | URL of the cargo-deny config to fetch. Override to pin policy to a tag/SHA |
 
 ### Shared config
 
-`cargo-deny` uses the [`deny.toml`](./deny.toml) at the root of this repo, fetched at workflow runtime. To propose a change to the policy (license allowlist, advisory ignore list, etc.), open a PR against this repo.
+`cargo-deny` uses the [`deny.toml`](./deny.toml) at the root of this repo, fetched at workflow runtime via the `deny-config` URL input. By default it points at `main`, so a policy change here takes effect immediately for every consumer — useful for security advisory updates, but it does mean the workflow's pinned ref alone (e.g. `@v1`) does not fully pin behavior. To pin policy too, override `deny-config`:
+
+```yaml
+with:
+  deny-config: https://raw.githubusercontent.com/marinade-finance/.github/v1/deny.toml
+```
+
+To propose a change to the shared policy (license allowlist, advisory ignore list, etc.), open a PR against this repo.
 
 ### Local-dev mirror
 
@@ -84,6 +92,17 @@ check:
 ### Versioning
 
 While the workflow is unstable it lives at `@main`. Once stable, a `v1` tag will be cut and consumers should migrate from `@main` to `@v1` so unrelated changes to `main` cannot break every consumer at once.
+
+Note that pinning the workflow ref alone does **not** pin `deny.toml` — see [Shared config](#shared-config) above for how to pin the cargo-deny policy as well.
+
+### Dependabot
+
+This repo's [`dependabot.yml`](./.github/dependabot.yml) updates pinned action SHAs monthly. Consuming repos should exclude `dtolnay/rust-toolchain` from Dependabot updates (it has only a `master` branch, no version tags), e.g.:
+
+```yaml
+ignore:
+  - dependency-name: 'dtolnay/rust-toolchain'
+```
 
 ### Branch protection
 
