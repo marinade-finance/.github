@@ -124,7 +124,26 @@ For Anchor repos, `verifiable-build` runs only on push to the default branch and
 - a sha256 hash table for each compiled program in the run's job summary, and
 - a workflow artifact (`verifiable-build-<sha>`) containing the `target/deploy/*.so` files, retained for 90 days.
 
-The build runs inside Ellipsis Labs's `solana-verifiable-build` Docker image (invoked by `solana-verify build`), so the produced binary is bit-for-bit reproducible. To verify against on-chain bytecode, run `solana-verify verify-from-repo` locally with the artifact's hash — that flow is not currently in CI because it requires per-repo program IDs and RPC config.
+The build runs inside Ellipsis Labs's `solana-verifiable-build` Docker image (invoked by `solana-verify build`), so the produced binary is bit-for-bit reproducible.
+
+### Verify deployments (manual)
+
+A separate manually-triggered reusable workflow (`verify-deployments.yml`) builds the program(s) verifiably and compares the resulting hash against every cluster declared in `Anchor.toml`'s `[programs.<cluster>]` sections. Results are rendered as a per-cluster status matrix in the run summary (✅ match / ❌ mismatch / ⏸ not deployed).
+
+Add a thin wrapper in any Anchor consumer repo:
+
+```yaml
+name: Verify deployments
+on:
+  workflow_dispatch:
+jobs:
+  verify:
+    uses: marinade-finance/.github/.github/workflows/verify-deployments.yml@main
+```
+
+Then trigger it from the **Actions** tab. RPC URLs default to public Solana cluster monikers (`mainnet-beta`, `devnet`, `testnet`); override per-cluster via the `mainnet-rpc-url` / `devnet-rpc-url` / `testnet-rpc-url` inputs if you need a private RPC. `[programs.localnet]` entries are skipped (no deployment to compare against).
+
+The job does not fail on mismatch — by design, since the deployed program is often older than the default-branch HEAD.
 
 ## Other workflows
 

@@ -1,0 +1,169 @@
+name: Verify deployments (reusable)
+
+# Manually-triggered reusable workflow. Builds programs verifiably with
+# `solana-verify`, then for every program declared under `[programs.<cluster>]`
+# in Anchor.toml, fetches the on-chain hash and compares.
+#
+# Consumers should wrap this in a workflow with `on: workflow_dispatch:`.
+
+on:
+  workflow_call:
+    inputs:
+      rust-workspace:
+        description: "Path to Rust workspace root (must contain Anchor.toml)"
+        required: false
+        default: "."
+        type: string
+      solana-verify-version:
+        description: "solana-verify CLI version to install"
+        required: false
+        default: "0.4.15"
+        type: string
+      mainnet-rpc-url:
+        description: "RPC URL or moniker for mainnet (Anchor.toml [programs.mainnet])"
+        required: false
+        default: "mainnet-beta"
+        type: string
+      devnet-rpc-url:
+        description: "RPC URL or moniker for devnet"
+        required: false
+        default: "devnet"
+        type: string
+      testnet-rpc-url:
+        description: "RPC URL or moniker for testnet"
+        required: false
+        default: "testnet"
+        type: string
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: ${{ inputs.rust-workspace }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: stable
+
+      - name: Cache solana-verify binary
+        id: cache-solana-verify
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/bin/solana-verify
+          key: solana-verify-${{ runner.os }}-${{ inputs.solana-verify-version }}
+
+      - name: Install solana-verify
+        if: steps.cache-solana-verify.outputs.cache-hit != 'true'
+        working-directory: ${{ github.workspace }}
+        run: cargo install --locked solana-verify --version ${{ inputs.solana-verify-version }}
+
+      - name: Verifiable build
+        run: solana-verify build
+
+      - name: Compare against on-chain deployments
+        env:
+          MAINNET_URL: ${{ inputs.mainnet-rpc-url }}
+          DEVNET_URL: ${{ inputs.devnet-rpc-url }}
+          TESTNET_URL: ${{ inputs.testnet-rpc-url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f Anchor.toml ]]; then
+            echo "::error::Anchor.toml not found in ${{ inputs.rust-workspace }}"
+            exit 1
+          fi
+
+          # Emit one row per (cluster, program_name, program_id) from Anchor.toml.
+          mapfile -t entries < <(python3 - <<'PY'
+          import tomllib
+          with open("Anchor.toml", "rb") as f:
+              data = tomllib.load(f)
+          for cluster, mapping in data.get("programs", {}).items():
+              if not isinstance(mapping, dict):
+                  continue
+              for name, pubkey in mapping.items():
+                  print(f"{cluster}\t{name}\t{pubkey}")
+          PY
+          )
+
+          if [[ ${#entries[@]} -eq 0 ]]; then
+            echo "::warning::Anchor.toml has no [programs.*] sections to verify"
+            echo "## Verify deployments" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Anchor.toml has no \`[programs.*]\` sections — nothing to verify." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          declare -A LOCAL_HASH
+          for so in target/deploy/*.so; do
+            [[ -e "$so" ]] || continue
+            name=$(basename "$so" .so)
+            LOCAL_HASH[$name]=$(solana-verify get-executable-hash "$so")
+          done
+
+          cluster_url() {
+            case "$1" in
+              localnet)              echo "" ;;
+              mainnet|mainnet-beta)  echo "$MAINNET_URL" ;;
+              devnet)                echo "$DEVNET_URL" ;;
+              testnet)               echo "$TESTNET_URL" ;;
+              *)                     echo "$1" ;;  # treat unknown as a literal URL/moniker
+            esac
+          }
+
+          short() { printf '%s' "${1:0:8}…${1: -6}"; }
+
+          {
+            echo "## Verify deployments"
+            echo ""
+            echo "solana-verify \`${{ inputs.solana-verify-version }}\` — built at \`$(git rev-parse --short HEAD)\`"
+            echo ""
+            echo "| Cluster | Program | Pubkey | Local | On-chain | Status |"
+            echo "| --- | --- | --- | --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          mismatches=0
+          for entry in "${entries[@]}"; do
+            IFS=$'\t' read -r cluster name pubkey <<< "$entry"
+            local_hash="${LOCAL_HASH[$name]:-}"
+            local_short="—"
+            [[ -n "$local_hash" ]] && local_short="\`$(short "$local_hash")\`"
+
+            url=$(cluster_url "$cluster")
+            if [[ -z "$url" ]]; then
+              status="⏭ skipped (localnet)"
+              on_chain_short="—"
+            elif [[ -z "$local_hash" ]]; then
+              status="⚠ no local build"
+              on_chain_short="—"
+            else
+              if on_chain_hash=$(solana-verify get-program-hash "$pubkey" --url "$url" 2>/dev/null); then
+                on_chain_short="\`$(short "$on_chain_hash")\`"
+                if [[ "$local_hash" == "$on_chain_hash" ]]; then
+                  status="✅ match"
+                else
+                  status="❌ mismatch"
+                  mismatches=$((mismatches + 1))
+                fi
+              else
+                status="⏸ not deployed / RPC error"
+                on_chain_short="—"
+              fi
+            fi
+
+            echo "| \`$cluster\` | \`$name\` | \`$(short "$pubkey")\` | $local_short | $on_chain_short | $status |" \
+              >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          {
+            echo ""
+            if [[ $mismatches -gt 0 ]]; then
+              echo "**$mismatches mismatch(es) detected** — the on-chain bytecode differs from a verifiable build of the current ref."
+            else
+              echo "All checked deployments match the verifiable build of the current ref."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
