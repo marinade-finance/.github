@@ -12,6 +12,7 @@ A reusable workflow that runs static analysis on Rust and Anchor codebases. It a
 | **cargo-deny** | Supply chain: RustSec CVE advisories, license allowlist, banned/yanked crates, duplicates | Any `Cargo.toml` present |
 | **Sec3 X-Ray** | Solana dataflow analyzer: signer/owner checks, PDA seed reuse, arbitrary CPI, account substitution, lamport math overflow | `Anchor.toml` present |
 | **solana-lints** | Trail of Bits Dylint-based Anchor pattern lints (insecure init, bump seed canonicalization, audit-derived antipatterns) | `Anchor.toml` present |
+| **solana-verify** | Reproducible build of all programs via Ellipsis Labs `solana-verifiable-build`; emits sha256 hashes to the run summary and uploads `target/deploy/*.so` as a workflow artifact | `Anchor.toml` present **and** push to the repo's default branch |
 
 Anchor detection is `Anchor.toml`-only — Cargo dependencies on `anchor-lang` / `anchor-client` are not used as a signal, since off-chain services that pull in Anchor crates for deserialization are not Anchor programs.
 
@@ -66,6 +67,7 @@ All inputs are optional.
 | `xray-version` | `v0.0.6` | Sec3 X-Ray release tag to install |
 | `solana-lints-ref` | (pinned SHA) | `crytic/solana-lints` git ref to build lints from; bump deliberately together with `solana-lints-toolchain` |
 | `deny-config` | `…/main/deny.toml` | URL of the cargo-deny config to fetch. Override to pin policy to a tag/SHA |
+| `solana-verify-version` | `0.4.15` | Version of the `solana-verify` CLI used by the verifiable-build job |
 
 ### Shared config
 
@@ -112,6 +114,17 @@ After rolling out, add the relevant jobs as required status checks in each consu
 - Anchor repos: also `sec3-xray`, `solana-lints`
 
 Skipped jobs render as gray "skipped" rather than failures, so a TS-only repo with this workflow still goes green.
+
+The `verifiable-build` job is intentionally **not** a required check — it only runs on push to the default branch, so it never blocks PR merges.
+
+### Verifiable build
+
+For Anchor repos, `verifiable-build` runs only on push to the default branch and produces:
+
+- a sha256 hash table for each compiled program in the run's job summary, and
+- a workflow artifact (`verifiable-build-<sha>`) containing the `target/deploy/*.so` files, retained for 90 days.
+
+The build runs inside Ellipsis Labs's `solana-verifiable-build` Docker image (invoked by `solana-verify build`), so the produced binary is bit-for-bit reproducible. To verify against on-chain bytecode, run `solana-verify verify-from-repo` locally with the artifact's hash — that flow is not currently in CI because it requires per-repo program IDs and RPC config.
 
 ## Other workflows
 

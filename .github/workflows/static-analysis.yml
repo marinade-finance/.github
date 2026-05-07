@@ -53,6 +53,11 @@ on:
         required: false
         default: "https://raw.githubusercontent.com/marinade-finance/.github/main/deny.toml"
         type: string
+      solana-verify-version:
+        description: "solana-verify CLI version (Ellipsis Labs/solana-verifiable-build) to install for the verifiable-build job."
+        required: false
+        default: "0.4.15"
+        type: string
 
 jobs:
   detect:
@@ -232,3 +237,66 @@ jobs:
         env:
           DYLINT_LIBRARY_PATH: /tmp/solana-lints/target/release
         run: cargo dylint --all -- --all-targets
+
+  verifiable-build:
+    needs: detect
+    if: >-
+      needs.detect.outputs.has-anchor == 'true' &&
+      github.event_name == 'push' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: ${{ inputs.rust-workspace }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: stable
+
+      - name: Cache solana-verify binary
+        id: cache-solana-verify
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/bin/solana-verify
+          key: solana-verify-${{ runner.os }}-${{ inputs.solana-verify-version }}
+
+      - name: Install solana-verify
+        if: steps.cache-solana-verify.outputs.cache-hit != 'true'
+        working-directory: ${{ github.workspace }}
+        run: cargo install --locked solana-verify --version ${{ inputs.solana-verify-version }}
+
+      - name: Verifiable build
+        run: solana-verify build
+
+      - name: Compute executable hashes
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          binaries=(target/deploy/*.so)
+          if [[ ${#binaries[@]} -eq 0 ]]; then
+            echo "::error::solana-verify build produced no .so files in target/deploy"
+            exit 1
+          fi
+          {
+            echo "## Verifiable build"
+            echo ""
+            echo "solana-verify \`${{ inputs.solana-verify-version }}\`"
+            echo ""
+            echo "| Program | sha256 |"
+            echo "| --- | --- |"
+            for so in "${binaries[@]}"; do
+              name=$(basename "$so" .so)
+              hash=$(solana-verify get-executable-hash "$so")
+              echo "| \`$name\` | \`$hash\` |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload program binaries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verifiable-build-${{ github.sha }}
+          path: ${{ inputs.rust-workspace }}/target/deploy/*.so
+          if-no-files-found: error
+          retention-days: 90
