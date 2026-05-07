@@ -46,7 +46,8 @@ jobs:
     uses: marinade-finance/.github/.github/workflows/static-analysis.yml@main
     with:
       clippy-deny-warnings: false        # non-blocking during initial cleanup
-      rust-workspace: ./rust             # rust lives in subdir
+      rust-workspace: ./rust             # off-chain Rust crate
+      anchor-workspace: ./on-chain       # Anchor.toml + Cargo.toml live here
       anchor-programs-path: ./on-chain/programs
       run-solana: 'false'                # force-disable even if Anchor.toml exists
 ```
@@ -59,8 +60,9 @@ All inputs are optional.
 | --- | --- | --- |
 | `run-rust` | `auto` | Force on/off: `'true'` / `'false'` / `'auto'` |
 | `run-solana` | `auto` | Force on/off: `'true'` / `'false'` / `'auto'` |
-| `rust-workspace` | `.` | Path to Rust workspace root |
-| `anchor-programs-path` | `./programs` | Path Sec3 X-Ray scans |
+| `rust-workspace` | `.` | Path to Rust workspace root (must contain `Cargo.toml` for clippy/cargo-deny to run) |
+| `anchor-workspace` | `""` (= `rust-workspace`) | Path to Anchor workspace root (must contain `Anchor.toml`). Set when Anchor lives outside the Rust workspace |
+| `anchor-programs-path` | `./programs` | Path Sec3 X-Ray scans (typically `<anchor-workspace>/programs`) |
 | `rust-toolchain` | `stable` | Toolchain for clippy |
 | `solana-lints-toolchain` | `nightly-2025-01-09` | Nightly for solana-lints; must match upstream `crytic/solana-lints` `rust-toolchain` |
 | `clippy-deny-warnings` | `true` | Set `false` during initial cleanup |
@@ -82,13 +84,18 @@ To propose a change to the shared policy (license allowlist, advisory ignore lis
 
 ### Local-dev mirror
 
-To catch issues before pushing, add a `Makefile` target in your repo:
+To catch issues before pushing, add a `Makefile` target in your repo. `make` defaults to `/bin/sh` on most systems, so the deny.toml is downloaded to a temp file rather than passed via process substitution:
 
 ```makefile
+DENY_CONFIG_URL := https://raw.githubusercontent.com/marinade-finance/.github/main/deny.toml
+
 .PHONY: check
 check:
 	cargo clippy --all-targets --all-features -- -D warnings
-	cargo deny --config <(curl -fsSL https://raw.githubusercontent.com/marinade-finance/.github/main/deny.toml) check
+	@DENY_TMP=$$(mktemp) && \
+	  curl -fsSL $(DENY_CONFIG_URL) -o $$DENY_TMP && \
+	  cargo deny --config $$DENY_TMP check; \
+	  rc=$$?; rm -f $$DENY_TMP; exit $$rc
 ```
 
 ### Versioning

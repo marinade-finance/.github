@@ -10,9 +10,14 @@ on:
   workflow_call:
     inputs:
       rust-workspace:
-        description: "Path to Rust workspace root (must contain Anchor.toml)"
+        description: "Path to Rust workspace root. Used as fallback when anchor-workspace is empty."
         required: false
         default: "."
+        type: string
+      anchor-workspace:
+        description: "Path to Anchor workspace root (must contain Anchor.toml). Falls back to rust-workspace when empty."
+        required: false
+        default: ""
         type: string
       solana-verify-version:
         description: "solana-verify CLI version to install"
@@ -40,7 +45,7 @@ jobs:
     runs-on: ubuntu-24.04
     defaults:
       run:
-        working-directory: ${{ inputs.rust-workspace }}
+        working-directory: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -73,7 +78,7 @@ jobs:
           set -euo pipefail
 
           if [[ ! -f Anchor.toml ]]; then
-            echo "::error::Anchor.toml not found in ${{ inputs.rust-workspace }}"
+            echo "::error::Anchor.toml not found in ${{ inputs.anchor-workspace || inputs.rust-workspace }}"
             exit 1
           fi
 

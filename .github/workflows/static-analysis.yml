@@ -14,12 +14,17 @@ on:
         default: "auto"
         type: string
       rust-workspace:
-        description: "Path to Rust workspace root"
+        description: "Path to Rust workspace root (must contain Cargo.toml)"
         required: false
         default: "."
         type: string
+      anchor-workspace:
+        description: "Path to Anchor workspace root (must contain Anchor.toml). Falls back to rust-workspace when empty."
+        required: false
+        default: ""
+        type: string
       anchor-programs-path:
-        description: "Path Sec3 X-Ray scans"
+        description: "Path Sec3 X-Ray scans (typically <anchor-workspace>/programs)"
         required: false
         default: "./programs"
         type: string
@@ -74,6 +79,7 @@ jobs:
           RUN_RUST: ${{ inputs.run-rust }}
           RUN_SOLANA: ${{ inputs.run-solana }}
           RUST_WORKSPACE: ${{ inputs.rust-workspace }}
+          ANCHOR_WORKSPACE: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
         run: |
           set -euo pipefail
 
@@ -82,25 +88,27 @@ jobs:
             exit 1
           fi
 
-          # Rust detection — scoped to rust-workspace so we don't enable jobs
-          # that will then fail because the configured workspace has no manifest.
+          # Rust detection — require Cargo.toml at the workspace root, since
+          # `cargo clippy` and `cargo-deny` both need a root manifest. A nested
+          # crate without a root manifest would otherwise enable jobs that fail.
           if [[ "$RUN_RUST" == "true" ]]; then
             HAS_RUST=true
           elif [[ "$RUN_RUST" == "false" ]]; then
             HAS_RUST=false
-          elif find "$RUST_WORKSPACE" -name Cargo.toml -not -path '*/target/*' -not -path '*/node_modules/*' | grep -q .; then
+          elif [[ -f "$RUST_WORKSPACE/Cargo.toml" ]]; then
             HAS_RUST=true
           else
             HAS_RUST=false
           fi
 
-          # Anchor detection — Anchor.toml ONLY (no anchor-lang fallback),
-          # also scoped to rust-workspace.
+          # Anchor detection — Anchor.toml at the root of anchor-workspace.
+          # No fallback to anchor-lang dependency: off-chain services that
+          # consume anchor-client are not Anchor programs.
           if [[ "$RUN_SOLANA" == "true" ]]; then
             HAS_ANCHOR=true
           elif [[ "$RUN_SOLANA" == "false" ]]; then
             HAS_ANCHOR=false
-          elif find "$RUST_WORKSPACE" -name Anchor.toml -not -path '*/target/*' -not -path '*/node_modules/*' | grep -q .; then
+          elif [[ -d "$ANCHOR_WORKSPACE" && -f "$ANCHOR_WORKSPACE/Anchor.toml" ]]; then
             HAS_ANCHOR=true
           else
             HAS_ANCHOR=false
@@ -111,9 +119,8 @@ jobs:
 
           {
             echo "## Detection results"
-            echo "- Workspace: \`$RUST_WORKSPACE\`"
-            echo "- Rust: \`$HAS_RUST\`"
-            echo "- Anchor: \`$HAS_ANCHOR\`"
+            echo "- Rust workspace: \`$RUST_WORKSPACE\` → has-rust=\`$HAS_RUST\`"
+            echo "- Anchor workspace: \`$ANCHOR_WORKSPACE\` → has-anchor=\`$HAS_ANCHOR\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   clippy:
@@ -183,7 +190,15 @@ jobs:
         run: xray --version || xray --help | head -20
 
       - name: Run X-Ray
-        run: xray "${{ inputs.anchor-programs-path }}"
+        env:
+          ANCHOR_PROGRAMS_PATH: ${{ inputs.anchor-programs-path }}
+        run: |
+          set -euo pipefail
+          if [[ ! -d "$ANCHOR_PROGRAMS_PATH" ]]; then
+            echo "::error::anchor-programs-path '$ANCHOR_PROGRAMS_PATH' does not exist"
+            exit 1
+          fi
+          xray "$ANCHOR_PROGRAMS_PATH"
 
   solana-lints:
     needs: detect
@@ -191,7 +206,7 @@ jobs:
     runs-on: ubuntu-24.04
     defaults:
       run:
-        working-directory: ${{ inputs.rust-workspace }}
+        working-directory: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -202,7 +217,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
-          workspaces: ${{ inputs.rust-workspace }}
+          workspaces: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
 
       - name: Install dylint
         uses: taiki-e/install-action@cca35edeb1d01366c2843b68fc3ca441446d73d3 # v2
@@ -247,7 +262,7 @@ jobs:
     runs-on: ubuntu-24.04
     defaults:
       run:
-        working-directory: ${{ inputs.rust-workspace }}
+        working-directory: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -297,6 +312,6 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: verifiable-build-${{ github.sha }}
-          path: ${{ inputs.rust-workspace }}/target/deploy/*.so
+          path: ${{ inputs.anchor-workspace || inputs.rust-workspace }}/target/deploy/*.so
           if-no-files-found: error
           retention-days: 90
