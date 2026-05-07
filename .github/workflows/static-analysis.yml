@@ -1,0 +1,208 @@
+name: Static Analysis (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      run-rust:
+        description: "Run clippy + cargo-deny: 'auto' | 'true' | 'false'"
+        required: false
+        default: "auto"
+        type: string
+      run-solana:
+        description: "Run Sec3 X-Ray + solana-lints: 'auto' | 'true' | 'false'"
+        required: false
+        default: "auto"
+        type: string
+      rust-workspace:
+        description: "Path to Rust workspace root"
+        required: false
+        default: "."
+        type: string
+      anchor-programs-path:
+        description: "Path Sec3 X-Ray scans"
+        required: false
+        default: "./programs"
+        type: string
+      rust-toolchain:
+        description: "Toolchain for clippy and X-Ray"
+        required: false
+        default: "stable"
+        type: string
+      solana-lints-toolchain:
+        description: "Nightly toolchain for solana-lints (must match upstream crytic/solana-lints rust-toolchain)"
+        required: false
+        default: "nightly-2025-01-09"
+        type: string
+      clippy-deny-warnings:
+        description: "Treat clippy warnings as errors"
+        required: false
+        default: true
+        type: boolean
+      xray-version:
+        description: "Sec3 X-Ray release tag to install"
+        required: false
+        default: "v0.0.6"
+        type: string
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      has-rust: ${{ steps.check.outputs.has-rust }}
+      has-anchor: ${{ steps.check.outputs.has-anchor }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: check
+        shell: bash
+        env:
+          RUN_RUST: ${{ inputs.run-rust }}
+          RUN_SOLANA: ${{ inputs.run-solana }}
+        run: |
+          set -euo pipefail
+
+          # Rust detection
+          if [[ "$RUN_RUST" == "true" ]]; then
+            HAS_RUST=true
+          elif [[ "$RUN_RUST" == "false" ]]; then
+            HAS_RUST=false
+          elif find . -name Cargo.toml -not -path '*/target/*' -not -path '*/node_modules/*' | grep -q .; then
+            HAS_RUST=true
+          else
+            HAS_RUST=false
+          fi
+
+          # Anchor detection — Anchor.toml ONLY (no anchor-lang fallback)
+          if [[ "$RUN_SOLANA" == "true" ]]; then
+            HAS_ANCHOR=true
+          elif [[ "$RUN_SOLANA" == "false" ]]; then
+            HAS_ANCHOR=false
+          elif find . -name Anchor.toml -not -path '*/target/*' -not -path '*/node_modules/*' | grep -q .; then
+            HAS_ANCHOR=true
+          else
+            HAS_ANCHOR=false
+          fi
+
+          echo "has-rust=$HAS_RUST" >> "$GITHUB_OUTPUT"
+          echo "has-anchor=$HAS_ANCHOR" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Detection results"
+            echo "- Rust: \`$HAS_RUST\`"
+            echo "- Anchor: \`$HAS_ANCHOR\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  clippy:
+    needs: detect
+    if: needs.detect.outputs.has-rust == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.rust-workspace }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust-toolchain }}
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ inputs.rust-workspace }}
+
+      - name: cargo clippy
+        run: |
+          if [[ "${{ inputs.clippy-deny-warnings }}" == "true" ]]; then
+            cargo clippy --all-targets --all-features -- -D warnings
+          else
+            cargo clippy --all-targets --all-features
+          fi
+
+  cargo-deny:
+    needs: detect
+    if: needs.detect.outputs.has-rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch shared deny.toml
+        run: |
+          curl -fsSL \
+            "https://raw.githubusercontent.com/marinade-finance/.github/main/deny.toml" \
+            -o "${{ runner.temp }}/deny.toml"
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check all
+          manifest-path: ${{ inputs.rust-workspace }}/Cargo.toml
+          arguments: --config ${{ runner.temp }}/deny.toml
+
+  sec3-xray:
+    needs: detect
+    if: needs.detect.outputs.has-anchor == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust-toolchain }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ inputs.rust-workspace }}
+
+      - name: Install Sec3 X-Ray
+        env:
+          XRAY_VERSION: ${{ inputs.xray-version }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.xray"
+          curl -fsSL \
+            "https://github.com/sec3-product/x-ray/releases/download/${XRAY_VERSION}/x-ray-${XRAY_VERSION}-linux-amd64.tar.gz" \
+            | tar -xz -C "$HOME/.xray"
+          echo "$HOME/.xray/bin" >> "$GITHUB_PATH"
+
+      - name: Verify X-Ray installation
+        run: xray --version || xray --help | head -20
+
+      - name: Run X-Ray
+        run: xray "${{ inputs.anchor-programs-path }}"
+
+  solana-lints:
+    needs: detect
+    if: needs.detect.outputs.has-anchor == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.rust-workspace }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.solana-lints-toolchain }}
+          components: rustc-dev, llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ inputs.rust-workspace }}
+
+      - name: Install dylint
+        run: cargo install cargo-dylint dylint-link --locked
+
+      - name: Clone solana-lints
+        run: git clone --depth 1 https://github.com/crytic/solana-lints.git /tmp/solana-lints
+
+      - name: Build lints
+        run: |
+          set -euo pipefail
+          for lint in /tmp/solana-lints/lints/*/; do
+            (cd "$lint" && cargo build --release)
+          done
+
+      - name: Run dylint
+        env:
+          DYLINT_LIBRARY_PATH: /tmp/solana-lints/target/release
+        run: cargo dylint --all -- --all-targets
