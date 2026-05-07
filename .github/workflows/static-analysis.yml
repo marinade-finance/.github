@@ -48,6 +48,11 @@ on:
         required: false
         default: "v0.0.6"
         type: string
+      anchor-cli-version:
+        description: "anchor-cli version installed for the sec3-xray job. X-Ray shells out to `anchor` for IDL extraction; missing it produces incomplete analysis."
+        required: false
+        default: "0.31.1"
+        type: string
       solana-lints-ref:
         description: "crytic/solana-lints git ref (commit SHA or tag) to build lints from"
         required: false
@@ -191,6 +196,21 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: stable
+
+      - name: Cache anchor-cli binary
+        id: cache-anchor
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/bin/anchor
+          key: anchor-cli-${{ runner.os }}-${{ inputs.anchor-cli-version }}
+
+      - name: Install anchor-cli
+        if: steps.cache-anchor.outputs.cache-hit != 'true'
+        run: cargo install --locked anchor-cli --version ${{ inputs.anchor-cli-version }}
+
       - name: Install Sec3 X-Ray
         env:
           XRAY_VERSION: ${{ inputs.xray-version }}
@@ -202,19 +222,40 @@ jobs:
             | tar -xz -C "$HOME/.xray"
           echo "$HOME/.xray/bin" >> "$GITHUB_PATH"
 
-      - name: Verify X-Ray installation
-        run: xray --version || xray --help | head -20
+      - name: Verify tool installations
+        run: |
+          set -euo pipefail
+          xray --version || xray --help | head -20
+          anchor --version
 
       - name: Run X-Ray
         env:
           ANCHOR_PROGRAMS_PATH: ${{ inputs.anchor-programs-path || format('{0}/programs', inputs.anchor-workspace || inputs.rust-workspace) }}
+        # X-Ray exits 0 even when sub-tools (anchor, the LLVM IR pass) emit
+        # errors and the final "no issues detected" path is reached. Capture
+        # output and fail on common error patterns so silent failures don't
+        # masquerade as a passing scan.
         run: |
           set -euo pipefail
           if [[ ! -d "$ANCHOR_PROGRAMS_PATH" ]]; then
             echo "::error::anchor-programs-path '$ANCHOR_PROGRAMS_PATH' does not exist"
             exit 1
           fi
-          xray "$ANCHOR_PROGRAMS_PATH"
+
+          LOG="${RUNNER_TEMP:-/tmp}/xray.log"
+          set -o pipefail
+          xray "$ANCHOR_PROGRAMS_PATH" 2>&1 | tee "$LOG"
+
+          # Match: " error: " (LLVM/MLIR diagnostics, e.g. loc(...): error: ...),
+          #        leading "sh: <n>:" (X-Ray subprocess failures),
+          #        leading "Error:" / "ERROR:" (X-Ray's own fatal output).
+          if grep -nE '(: error: |^sh: [0-9]+:|^Error:|^ERROR:)' "$LOG" > /dev/null; then
+            echo "::error::X-Ray reported errors during analysis (see annotations below)"
+            while IFS= read -r line; do
+              echo "::error::$line"
+            done < <(grep -nE '(: error: |^sh: [0-9]+:|^Error:|^ERROR:)' "$LOG")
+            exit 1
+          fi
 
   solana-lints:
     needs: detect

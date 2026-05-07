@@ -66,6 +66,7 @@ All inputs are optional.
 | `solana-lints-toolchain` | `nightly-2025-01-09` | Nightly for solana-lints; must match upstream `crytic/solana-lints` `rust-toolchain` |
 | `clippy-deny-warnings` | `true` | Set `false` during initial cleanup |
 | `xray-version` | `v0.0.6` | Sec3 X-Ray release tag to install |
+| `anchor-cli-version` | `0.31.1` | `anchor-cli` version installed for the sec3-xray job (X-Ray shells out to `anchor` for IDL extraction) |
 | `solana-lints-ref` | (pinned SHA) | `crytic/solana-lints` git ref to build lints from; bump deliberately together with `solana-lints-toolchain` |
 | `deny-config` | `…/main/deny.toml` | URL of the cargo-deny config to fetch. Override to pin policy to a tag/SHA |
 | `solana-verify-version` | `0.4.15` | Version of the `solana-verify` CLI used by the verifiable-build job |
