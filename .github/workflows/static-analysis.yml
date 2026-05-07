@@ -180,9 +180,9 @@ jobs:
 
       - uses: EmbarkStudios/cargo-deny-action@5bb39ff5d5a0e94dc9e2dc94eced0c6129743a57 # v2
         with:
-          command: check all
+          command: check
           manifest-path: ${{ inputs.rust-workspace }}/Cargo.toml
-          arguments: --config ${{ runner.temp }}/deny.toml
+          command-arguments: --config ${{ runner.temp }}/deny.toml all
 
   sec3-xray:
     needs: detect
