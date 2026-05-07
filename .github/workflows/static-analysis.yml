@@ -24,9 +24,9 @@ on:
         default: ""
         type: string
       anchor-programs-path:
-        description: "Path Sec3 X-Ray scans (typically <anchor-workspace>/programs)"
+        description: "Path Sec3 X-Ray scans. When empty, defaults to <anchor-workspace>/programs."
         required: false
-        default: "./programs"
+        default: ""
         type: string
       rust-toolchain:
         description: "Toolchain for clippy"
@@ -79,6 +79,7 @@ jobs:
           RUN_RUST: ${{ inputs.run-rust }}
           RUN_SOLANA: ${{ inputs.run-solana }}
           RUST_WORKSPACE: ${{ inputs.rust-workspace }}
+          ANCHOR_WORKSPACE_INPUT: ${{ inputs.anchor-workspace }}
           ANCHOR_WORKSPACE: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
         run: |
           set -euo pipefail
@@ -86,6 +87,21 @@ jobs:
           if [[ ! -d "$RUST_WORKSPACE" ]]; then
             echo "::error::rust-workspace '$RUST_WORKSPACE' does not exist"
             exit 1
+          fi
+
+          # If the caller set anchor-workspace explicitly, or forced run-solana,
+          # treat it as an assertion that an Anchor workspace exists there and
+          # fail fast if not. In auto mode with no explicit input, falling
+          # through to has-anchor=false is the right behavior.
+          if [[ -n "$ANCHOR_WORKSPACE_INPUT" || "$RUN_SOLANA" == "true" ]]; then
+            if [[ ! -d "$ANCHOR_WORKSPACE" ]]; then
+              echo "::error::anchor-workspace '$ANCHOR_WORKSPACE' does not exist"
+              exit 1
+            fi
+            if [[ ! -f "$ANCHOR_WORKSPACE/Anchor.toml" ]]; then
+              echo "::error::Anchor.toml not found at '$ANCHOR_WORKSPACE/Anchor.toml'"
+              exit 1
+            fi
           fi
 
           # Rust detection — require Cargo.toml at the workspace root, since
@@ -191,7 +207,7 @@ jobs:
 
       - name: Run X-Ray
         env:
-          ANCHOR_PROGRAMS_PATH: ${{ inputs.anchor-programs-path }}
+          ANCHOR_PROGRAMS_PATH: ${{ inputs.anchor-programs-path || format('{0}/programs', inputs.anchor-workspace || inputs.rust-workspace) }}
         run: |
           set -euo pipefail
           if [[ ! -d "$ANCHOR_PROGRAMS_PATH" ]]; then
@@ -242,6 +258,13 @@ jobs:
       - name: Build lints
         if: steps.lints-cache.outputs.cache-hit != 'true'
         working-directory: /tmp/solana-lints
+        # solana-lints is not a single Cargo workspace (root [workspace] only
+        # contains `crate`, not `lints/*`), so each lint must be built
+        # independently. Set CARGO_TARGET_DIR so all lints share one target
+        # dir — otherwise each lint builds into lints/<name>/target/release/
+        # and the cache path + DYLINT_LIBRARY_PATH below don't match reality.
+        env:
+          CARGO_TARGET_DIR: /tmp/solana-lints/target
         run: |
           set -euo pipefail
           for lint in lints/*/; do

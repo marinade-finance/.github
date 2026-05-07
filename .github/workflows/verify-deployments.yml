@@ -49,6 +49,23 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
+      - name: Validate Anchor workspace
+        env:
+          ANCHOR_WORKSPACE: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
+        # Run from $GITHUB_WORKSPACE so this step doesn't itself fail with a
+        # cd error if the configured directory is missing.
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [[ ! -d "$ANCHOR_WORKSPACE" ]]; then
+            echo "::error::anchor-workspace '$ANCHOR_WORKSPACE' does not exist"
+            exit 1
+          fi
+          if [[ ! -f "$ANCHOR_WORKSPACE/Anchor.toml" ]]; then
+            echo "::error::Anchor.toml not found at '$ANCHOR_WORKSPACE/Anchor.toml'"
+            exit 1
+          fi
+
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
           toolchain: stable
@@ -76,11 +93,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          if [[ ! -f Anchor.toml ]]; then
-            echo "::error::Anchor.toml not found in ${{ inputs.anchor-workspace || inputs.rust-workspace }}"
-            exit 1
-          fi
 
           # Emit one row per (cluster, program_name, program_id) from Anchor.toml.
           mapfile -t entries < <(python3 - <<'PY'

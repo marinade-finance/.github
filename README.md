@@ -47,8 +47,7 @@ jobs:
     with:
       clippy-deny-warnings: false        # non-blocking during initial cleanup
       rust-workspace: ./rust             # off-chain Rust crate
-      anchor-workspace: ./on-chain       # Anchor.toml + Cargo.toml live here
-      anchor-programs-path: ./on-chain/programs
+      anchor-workspace: ./on-chain       # Anchor.toml + programs/ live here
       run-solana: 'false'                # force-disable even if Anchor.toml exists
 ```
 
@@ -62,7 +61,7 @@ All inputs are optional.
 | `run-solana` | `auto` | Force on/off: `'true'` / `'false'` / `'auto'` |
 | `rust-workspace` | `.` | Path to Rust workspace root (must contain `Cargo.toml` for clippy/cargo-deny to run) |
 | `anchor-workspace` | `""` (= `rust-workspace`) | Path to Anchor workspace root (must contain `Anchor.toml`). Set when Anchor lives outside the Rust workspace |
-| `anchor-programs-path` | `./programs` | Path Sec3 X-Ray scans (typically `<anchor-workspace>/programs`) |
+| `anchor-programs-path` | `""` (= `<anchor-workspace>/programs`) | Path Sec3 X-Ray scans. Override only if your programs live somewhere other than `programs/` under the Anchor workspace |
 | `rust-toolchain` | `stable` | Toolchain for clippy |
 | `solana-lints-toolchain` | `nightly-2025-01-09` | Nightly for solana-lints; must match upstream `crytic/solana-lints` `rust-toolchain` |
 | `clippy-deny-warnings` | `true` | Set `false` during initial cleanup |
