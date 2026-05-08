@@ -2,7 +2,30 @@
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
-ignore = []
+# All ignored advisories are unfixable transitive dependencies pulled in
+# through the Solana / Anchor / SPL ecosystem (solana-sdk, solana-zk-sdk,
+# spl-token-2022, anchor-lang, …). Revisit when the upstream Solana crates
+# upgrade past these.
+ignore = [
+  # ed25519-dalek <2.0 — public-key oracle attack. solana-sdk pins 1.x.
+  "RUSTSEC-2022-0093",
+  # curve25519-dalek timing variability in Scalar*::sub. Solana-internal.
+  "RUSTSEC-2024-0344",
+  # atty unmaintained. Pulled by solana-logger via env_logger 0.9.
+  "RUSTSEC-2024-0375",
+  # derivative unmaintained. Pulled via ark-ff / ark-ec.
+  "RUSTSEC-2024-0388",
+  # paste unmaintained. Pulled via solana-program / anchor-lang.
+  "RUSTSEC-2024-0436",
+  # number_prefix unmaintained. Pulled via indicatif.
+  "RUSTSEC-2025-0119",
+  # bincode 1.x unmaintained. Pulled via solana-sdk.
+  "RUSTSEC-2025-0141",
+  # libsecp256k1 unmaintained. Pulled via solana-sdk.
+  "RUSTSEC-2025-0161",
+  # rand unsoundness with custom logger. Pulled via solana-sdk / spl-pod.
+  "RUSTSEC-2026-0097",
+]
 
 [licenses]
 allow = [
@@ -13,9 +36,13 @@ allow = [
   "BSD-3-Clause",
   "ISC",
   "Unicode-DFS-2016",
+  # ICU / idna crates pulled in via reqwest -> url -> idna.
+  "Unicode-3.0",
   "CC0-1.0",
   "Zlib",
   "MPL-2.0",
+  # webpki-roots ships the Mozilla CA bundle under CDLA-Permissive-2.0.
+  "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
 exceptions = []
