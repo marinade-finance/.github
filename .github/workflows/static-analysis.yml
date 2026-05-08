@@ -59,9 +59,9 @@ on:
         default: "e0f31e2e69c62a33669bf657343eab2d94e6dc9d"
         type: string
       cargo-dylint-version:
-        description: "cargo-dylint / dylint-link version to install. Pinned to a 4.x release because dylint 5.x's driver pulls cargo_metadata 0.23, which transitively requires cargo-platform >=0.3.2 (rustc >=1.88) — incompatible with the nightly-2025-01-09 (rustc 1.86) used to build the lints. dylint 4.1.x uses cargo_metadata 0.19 (cargo-platform 0.1.x), which builds cleanly on 1.86."
+        description: "cargo-dylint / dylint-link version to install. Pinned to 4.1.0 because dylint_internal 4.1.1+ bumped cargo_metadata from ^0.19 to ^0.22, which transitively pulls cargo-platform 0.3.x (rustc >=1.88) — incompatible with the nightly-2025-01-09 (rustc 1.86) used to build the lints. dylint_internal 4.1.0 still uses cargo_metadata 0.19 (cargo-platform 0.1.x), which builds cleanly on 1.86."
         required: false
-        default: "4.1.2"
+        default: "4.1.0"
         type: string
       deny-config:
         description: "URL of the cargo-deny config to use. Pin to a tag/SHA for stable behavior across reusable-workflow versions."
