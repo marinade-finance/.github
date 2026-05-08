@@ -27,21 +27,34 @@ ignore = [
   "RUSTSEC-2026-0097",
 ]
 
+# Permissive-only allow list. Anything copyleft (GPL/LGPL/AGPL/EUPL/EPL),
+# source-disclosure-required, or commercial-restricting must NOT be added
+# without an explicit security review — the goal is that downstream consumers
+# can ship binaries built from this tree without source-disclosure obligations.
 [licenses]
 allow = [
+  # Classic permissive
   "MIT",
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause",
   "BSD-3-Clause",
   "ISC",
-  "Unicode-DFS-2016",
-  # ICU / idna crates pulled in via reqwest -> url -> idna.
-  "Unicode-3.0",
+  # Boost — permissive, no patent grant. Used as alternative by `ryu`.
+  "BSL-1.0",
+  # Public-domain-equivalents. Used as alternatives by csv, aho-corasick,
+  # memchr, termcolor, walkdir, adler2, constant_time_eq, …
+  "0BSD",
+  "Unlicense",
+  "MIT-0",
   "CC0-1.0",
-  "Zlib",
+  # Weak copyleft, file-level — file-level disclosure only.
   "MPL-2.0",
-  # webpki-roots ships the Mozilla CA bundle under CDLA-Permissive-2.0.
+  # zlib (libz-rs-sys / zlib-rs and tinyvec/bytemuck/cfg_eval as alternative).
+  "Zlib",
+  # ICU / idna stack pulled in via reqwest -> url -> idna.
+  "Unicode-3.0",
+  # webpki-roots ships the Mozilla CA bundle.
   "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
