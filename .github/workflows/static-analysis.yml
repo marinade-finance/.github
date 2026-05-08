@@ -59,7 +59,7 @@ on:
         default: "e0f31e2e69c62a33669bf657343eab2d94e6dc9d"
         type: string
       cargo-dylint-version:
-        description: "cargo-dylint / dylint-link version to install. Pinned to 4.1.0 because dylint_internal 4.1.1+ bumped cargo_metadata from ^0.19 to ^0.22, which transitively pulls cargo-platform 0.3.x (rustc >=1.88) — incompatible with the nightly-2025-01-09 (rustc 1.86) used to build the lints. dylint_internal 4.1.0 still uses cargo_metadata 0.19 (cargo-platform 0.1.x), which builds cleanly on 1.86."
+        description: "cargo-dylint / dylint-link version to install. Pinned to 4.1.0 because dylint_internal 4.1.1+ bumped cargo_metadata from ^0.19 to ^0.22, which pulls cargo-platform 0.3.x (rustc >=1.88) — incompatible with the nightly-2025-01-09 (rustc 1.86) used to build the lints. dylint 4.1.0 uses cargo_metadata 0.19 → cargo-platform 0.1.x, which builds cleanly on 1.86."
         required: false
         default: "4.1.0"
         type: string
@@ -238,8 +238,12 @@ jobs:
           ANCHOR_PROGRAMS_PATH: ${{ inputs.anchor-programs-path || format('{0}/programs', inputs.anchor-workspace || inputs.rust-workspace) }}
         # X-Ray exits 0 even when sub-tools (anchor, the LLVM IR pass) emit
         # errors and the final "no issues detected" path is reached. Capture
-        # output and fail on common error patterns so silent failures don't
-        # masquerade as a passing scan.
+        # output and fail on subprocess failures (`sh: <n>:`) and X-Ray's own
+        # fatal output (`Error:` / `ERROR:`). Do NOT match generic `: error: `
+        # MLIR/LLVM diagnostics — X-Ray's IR-lowering pass spuriously emits
+        # those on perfectly valid Anchor code (e.g. `'llvm.call' op calling
+        # function with void result must not produce values` on `&mut`
+        # references), making the gate unusable in practice.
         run: |
           set -euo pipefail
           if [[ ! -d "$ANCHOR_PROGRAMS_PATH" ]]; then
@@ -251,14 +255,11 @@ jobs:
           set -o pipefail
           xray "$ANCHOR_PROGRAMS_PATH" 2>&1 | tee "$LOG"
 
-          # Match: " error: " (LLVM/MLIR diagnostics, e.g. loc(...): error: ...),
-          #        leading "sh: <n>:" (X-Ray subprocess failures),
-          #        leading "Error:" / "ERROR:" (X-Ray's own fatal output).
-          if grep -nE '(: error: |^sh: [0-9]+:|^Error:|^ERROR:)' "$LOG" > /dev/null; then
+          if grep -nE '(^sh: [0-9]+:|^Error:|^ERROR:)' "$LOG" > /dev/null; then
             echo "::error::X-Ray reported errors during analysis (see annotations below)"
             while IFS= read -r line; do
               echo "::error::$line"
-            done < <(grep -nE '(: error: |^sh: [0-9]+:|^Error:|^ERROR:)' "$LOG")
+            done < <(grep -nE '(^sh: [0-9]+:|^Error:|^ERROR:)' "$LOG")
             exit 1
           fi
 
