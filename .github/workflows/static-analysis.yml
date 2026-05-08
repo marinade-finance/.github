@@ -183,16 +183,26 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
+      # Write deny.toml inside ${{ github.workspace }} (mounted at the same
+      # path on host and inside the cargo-deny-action's docker container —
+      # /home/runner/work/<repo>/<repo> ↔ /github/workspace, with the
+      # action's working directory pinned to the workspace), then pass a
+      # relative `--config` path so it resolves identically in both. Writing
+      # to ${{ runner.temp }} doesn't work: that dir is mounted at
+      # /github/runner_temp inside the container, so an absolute host path
+      # like /home/runner/work/_temp/deny.toml doesn't exist there and
+      # cargo-deny silently falls back to its default config.
       - name: Fetch cargo-deny config
         env:
           DENY_CONFIG_URL: ${{ inputs.deny-config }}
-        run: curl -fsSL "$DENY_CONFIG_URL" -o "${{ runner.temp }}/deny.toml"
+          DENY_CONFIG_PATH: ${{ inputs.rust-workspace }}/.ci-deny.toml
+        run: curl -fsSL "$DENY_CONFIG_URL" -o "$DENY_CONFIG_PATH"
 
       - uses: EmbarkStudios/cargo-deny-action@5bb39ff5d5a0e94dc9e2dc94eced0c6129743a57 # v2
         with:
           command: check
           manifest-path: ${{ inputs.rust-workspace }}/Cargo.toml
-          command-arguments: --config ${{ runner.temp }}/deny.toml all
+          command-arguments: --config ${{ inputs.rust-workspace }}/.ci-deny.toml all
 
   sec3-xray:
     needs: detect
