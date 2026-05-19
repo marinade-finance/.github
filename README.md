@@ -69,6 +69,7 @@ All inputs are optional.
 | `xray-sha256` | `""` (skip) | SHA256 of the X-Ray linux-amd64 tarball. When set, the downloaded archive is verified against this checksum before extraction. Strongly recommended for supply-chain safety; leave empty to skip verification (a warning is logged) |
 | `anchor-cli-version` | `0.31.1` | `anchor-cli` version installed for the sec3-xray job (X-Ray shells out to `anchor` for IDL extraction) |
 | `solana-lints-ref` | (pinned SHA) | `crytic/solana-lints` git ref to build lints from; bump deliberately together with `solana-lints-toolchain` |
+| `cargo-dylint-version` | `4.1.0` | `cargo-dylint` / `dylint-link` version installed for the solana-lints job. Pinned to 4.1.0 because `dylint_internal` 4.1.1+ bumped `cargo_metadata` from ^0.19 to ^0.22, which transitively pulls `cargo-platform` 0.3.x (rustc ≥1.88) and breaks the driver build under the default nightly (rustc 1.86). Bump deliberately together with `solana-lints-toolchain` when moving past nightly-2025-01-09 |
 | `deny-config` | `…/main/deny.toml` | URL of the cargo-deny config to fetch. Override to pin policy to a tag/SHA |
 | `solana-verify-version` | `0.4.15` | Version of the `solana-verify` CLI used by the verifiable-build job |
 
