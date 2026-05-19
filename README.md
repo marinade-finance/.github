@@ -8,11 +8,11 @@ A reusable workflow that runs static analysis on Rust and Anchor codebases. It a
 
 | Tool | Purpose | Runs when |
 | --- | --- | --- |
-| **clippy** | Rust linter (idioms, perf, common bugs, anti-patterns) | Any `Cargo.toml` present |
-| **cargo-deny** | Supply chain: RustSec CVE advisories, license allowlist, banned/yanked crates, duplicates | Any `Cargo.toml` present |
-| **Sec3 X-Ray** | Solana dataflow analyzer: signer/owner checks, PDA seed reuse, arbitrary CPI, account substitution, lamport math overflow | `Anchor.toml` present |
-| **solana-lints** | Trail of Bits Dylint-based Anchor pattern lints (insecure init, bump seed canonicalization, audit-derived antipatterns) | `Anchor.toml` present |
-| **solana-verify** | Reproducible build of all programs via Ellipsis Labs `solana-verifiable-build`; emits sha256 hashes to the run summary and uploads `target/deploy/*.so` as a workflow artifact | `Anchor.toml` present **and** push to the repo's default branch |
+| **clippy** | Rust linter (idioms, perf, common bugs, anti-patterns) | `<rust-workspace>/Cargo.toml` present (workspace root manifest) |
+| **cargo-deny** | Supply chain: RustSec CVE advisories, license allowlist, banned/yanked crates, duplicates | `<rust-workspace>/Cargo.toml` present (workspace root manifest) |
+| **Sec3 X-Ray** | Solana dataflow analyzer: signer/owner checks, PDA seed reuse, arbitrary CPI, account substitution, lamport math overflow | `<anchor-workspace>/Anchor.toml` present |
+| **solana-lints** | Trail of Bits Dylint-based Anchor pattern lints (insecure init, bump seed canonicalization, audit-derived antipatterns) | `<anchor-workspace>/Anchor.toml` present |
+| **solana-verify** | Reproducible build of all programs via Ellipsis Labs `solana-verifiable-build`; emits sha256 hashes to the run summary and uploads `target/deploy/*.so` as a workflow artifact | `<anchor-workspace>/Anchor.toml` present **and** push to the repo's default branch (or manual `workflow_dispatch`) |
 
 Anchor detection is `Anchor.toml`-only — Cargo dependencies on `anchor-lang` / `anchor-client` are not used as a signal, since off-chain services that pull in Anchor crates for deserialization are not Anchor programs.
 
@@ -61,11 +61,12 @@ All inputs are optional.
 | `run-solana` | `auto` | Force on/off: `'true'` / `'false'` / `'auto'` |
 | `rust-workspace` | `.` | Path to Rust workspace root (must contain `Cargo.toml` for clippy/cargo-deny to run) |
 | `anchor-workspace` | `""` (= `rust-workspace`) | Path to Anchor workspace root (must contain `Anchor.toml`). Set when Anchor lives outside the Rust workspace |
-| `anchor-programs-path` | `""` (= `<anchor-workspace>/programs`) | Path Sec3 X-Ray scans. Override only if your programs live somewhere other than `programs/` under the Anchor workspace |
+| `anchor-programs-path` | `""` (= `programs`, resolved relative to `anchor-workspace`) | Path Sec3 X-Ray scans, resolved relative to `anchor-workspace`. Override only if your programs live somewhere other than `programs/` under the Anchor workspace |
 | `rust-toolchain` | `stable` | Toolchain for clippy |
 | `solana-lints-toolchain` | `nightly-2025-01-09` | Nightly for solana-lints; must match upstream `crytic/solana-lints` `rust-toolchain` |
 | `clippy-deny-warnings` | `true` | Set `false` during initial cleanup |
 | `xray-version` | `v0.0.6` | Sec3 X-Ray release tag to install |
+| `xray-sha256` | `""` (skip) | SHA256 of the X-Ray linux-amd64 tarball. When set, the downloaded archive is verified against this checksum before extraction. Strongly recommended for supply-chain safety; leave empty to skip verification (a warning is logged) |
 | `anchor-cli-version` | `0.31.1` | `anchor-cli` version installed for the sec3-xray job (X-Ray shells out to `anchor` for IDL extraction) |
 | `solana-lints-ref` | (pinned SHA) | `crytic/solana-lints` git ref to build lints from; bump deliberately together with `solana-lints-toolchain` |
 | `deny-config` | `…/main/deny.toml` | URL of the cargo-deny config to fetch. Override to pin policy to a tag/SHA |
