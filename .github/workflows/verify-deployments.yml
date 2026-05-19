@@ -115,9 +115,16 @@ jobs:
             exit 0
           fi
 
+          shopt -s nullglob
+          local_binaries=(target/deploy/*.so)
+          shopt -u nullglob
+          if [[ ${#local_binaries[@]} -eq 0 ]]; then
+            echo "::error::solana-verify build produced no .so files in target/deploy — nothing to compare against on-chain"
+            exit 1
+          fi
+
           declare -A LOCAL_HASH
-          for so in target/deploy/*.so; do
-            [[ -e "$so" ]] || continue
+          for so in "${local_binaries[@]}"; do
             name=$(basename "$so" .so)
             LOCAL_HASH[$name]=$(solana-verify get-executable-hash "$so")
           done
