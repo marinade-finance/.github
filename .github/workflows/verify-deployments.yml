@@ -47,7 +47,13 @@ jobs:
       run:
         working-directory: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
     steps:
+      # `persist-credentials: false`: this job only reads code (verifiable
+      # build, compares on-chain hashes), never pushes. Drop the
+      # GITHUB_TOKEN that checkout would otherwise leave in `.git/config`
+      # so a downstream step or third-party build script can't use it.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
 
       - name: Validate Anchor workspace
         env:
