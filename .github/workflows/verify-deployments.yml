@@ -95,7 +95,14 @@ jobs:
           set -euo pipefail
 
           # Emit one row per (cluster, program_name, program_id) from Anchor.toml.
-          mapfile -t entries < <(python3 - <<'PY'
+          # Redirect python3 output to a temp file (rather than using
+          # `mapfile -t entries < <(python3 ...)`) so a non-zero exit from
+          # tomllib — e.g., a malformed Anchor.toml — fails the step under
+          # `set -e`. With process substitution, the subshell's exit status
+          # isn't propagated and a parse error would silently degrade to
+          # "no [programs.*] sections" and a clean exit.
+          ENTRIES_FILE="${RUNNER_TEMP:-/tmp}/anchor-programs.tsv"
+          python3 - > "$ENTRIES_FILE" <<'PY'
           import tomllib
           with open("Anchor.toml", "rb") as f:
               data = tomllib.load(f)
@@ -105,7 +112,7 @@ jobs:
               for name, pubkey in mapping.items():
                   print(f"{cluster}\t{name}\t{pubkey}")
           PY
-          )
+          mapfile -t entries < "$ENTRIES_FILE"
 
           if [[ ${#entries[@]} -eq 0 ]]; then
             echo "::warning::Anchor.toml has no [programs.*] sections to verify"
