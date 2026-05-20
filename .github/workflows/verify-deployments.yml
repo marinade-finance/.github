@@ -6,6 +6,14 @@ name: Verify deployments (reusable)
 #
 # Consumers should wrap this in a workflow with `on: workflow_dispatch:`.
 
+# Cap the GITHUB_TOKEN at workflow scope to the minimum the job needs.
+# This workflow only reads code (verifiable build + RPC reads against
+# on-chain program hashes) and never writes to the repo or to any
+# protected resource. Setting permissions here overrides whatever the
+# caller granted.
+permissions:
+  contents: read
+
 on:
   workflow_call:
     inputs:
