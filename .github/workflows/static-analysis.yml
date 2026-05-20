@@ -200,7 +200,7 @@ jobs:
           toolchain: ${{ inputs.rust-toolchain }}
           components: clippy
 
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: ${{ inputs.rust-workspace }}
 
@@ -264,7 +264,7 @@ jobs:
 
       - name: Cache anchor-cli binary
         id: cache-anchor
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ~/.cargo/bin/anchor
           key: anchor-cli-${{ runner.os }}-${{ inputs.anchor-cli-version }}
@@ -367,7 +367,7 @@ jobs:
 
       # cargo-dylint pinned via input; see input description for rationale.
       - name: Install dylint
-        uses: taiki-e/install-action@cca35edeb1d01366c2843b68fc3ca441446d73d3 # v2
+        uses: taiki-e/install-action@213ccc1a076163c093f914550b94feb90fab916d # v2
         with:
           tool: cargo-dylint@${{ inputs.cargo-dylint-version }},dylint-link@${{ inputs.cargo-dylint-version }}
 
@@ -376,7 +376,7 @@ jobs:
           toolchain: ${{ inputs.solana-lints-toolchain }}
           components: rustc-dev, llvm-tools-preview
 
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
 
@@ -390,7 +390,7 @@ jobs:
 
       - name: Cache built lint libraries
         id: lints-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: /tmp/solana-lints/target/release
           key: solana-lints-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ inputs.solana-lints-ref }}
@@ -442,7 +442,7 @@ jobs:
 
       - name: Cache solana-verify binary
         id: cache-solana-verify
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ~/.cargo/bin/solana-verify
           key: solana-verify-${{ runner.os }}-${{ inputs.solana-verify-version }}
@@ -479,7 +479,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload program binaries
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: verifiable-build-${{ github.sha }}
           path: ${{ inputs.anchor-workspace || inputs.rust-workspace }}/target/deploy/*.so
