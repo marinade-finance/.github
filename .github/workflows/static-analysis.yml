@@ -1,5 +1,15 @@
 name: Static Analysis (reusable)
 
+# Cap the GITHUB_TOKEN at workflow scope to the minimum every job needs.
+# None of the jobs below write to the repo — they read code, run lints,
+# build artifacts, and (for verifiable-build) upload an artifact via the
+# Actions Cache API, which doesn't need any token scope. Declaring
+# permissions here overrides whatever the caller granted, so a caller
+# with a broader default token can't accidentally widen the blast radius
+# of any compromised step or third-party action.
+permissions:
+  contents: read
+
 on:
   workflow_call:
     inputs:
