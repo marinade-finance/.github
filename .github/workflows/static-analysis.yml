@@ -19,7 +19,12 @@ on:
         default: "auto"
         type: string
       run-solana:
-        description: "Run Sec3 X-Ray + solana-lints: 'auto' | 'true' | 'false'"
+        description: "Run Sec3 X-Ray + solana-lints: 'auto' | 'true' | 'false'. Does not control verifiable-build — see run-verifiable-build."
+        required: false
+        default: "auto"
+        type: string
+      run-verifiable-build:
+        description: "Run verifiable-build: 'auto' | 'true' | 'false'. In 'auto' mode the job runs only on push to the default branch and on workflow_dispatch, and only when Anchor.toml is present. 'true' forces the job on any event (still requires Anchor.toml). 'false' always skips. Decoupled from run-solana so a caller can ask for just verifiable-build without running sec3-xray / solana-lints."
         required: false
         default: "auto"
         type: string
@@ -102,6 +107,11 @@ jobs:
     outputs:
       has-rust: ${{ steps.check.outputs.has-rust }}
       has-anchor: ${{ steps.check.outputs.has-anchor }}
+      # File-existence-only signal for Anchor.toml. Unlike has-anchor it is
+      # NOT overridden by run-solana, so a caller that sets run-solana=false
+      # but still wants verifiable-build to run on the same Anchor program
+      # can use anchor-present to decide.
+      anchor-present: ${{ steps.check.outputs.anchor-present }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -112,6 +122,7 @@ jobs:
         env:
           RUN_RUST: ${{ inputs.run-rust }}
           RUN_SOLANA: ${{ inputs.run-solana }}
+          RUN_VERIFIABLE_BUILD: ${{ inputs.run-verifiable-build }}
           RUST_WORKSPACE: ${{ inputs.rust-workspace }}
           ANCHOR_WORKSPACE_INPUT: ${{ inputs.anchor-workspace }}
           ANCHOR_WORKSPACE: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
@@ -123,14 +134,14 @@ jobs:
             exit 1
           fi
 
-          # When run-solana is 'false', skip Anchor workspace validation
-          # entirely — a consumer should be able to disable Solana checks
-          # even if anchor-workspace is set (or accidentally set).
-          # Otherwise, when run-solana is 'true' or the caller set
-          # anchor-workspace explicitly, treat it as an assertion that an
-          # Anchor workspace exists there and fail fast if not.
-          if [[ "$RUN_SOLANA" != "false" ]] && \
-             [[ -n "$ANCHOR_WORKSPACE_INPUT" || "$RUN_SOLANA" == "true" ]]; then
+          # Validate the Anchor workspace whenever any flag explicitly asks
+          # for an Anchor-dependent job (run-solana=true, an explicit
+          # anchor-workspace, or run-verifiable-build=true). run-solana=false
+          # alone no longer skips this validation when run-verifiable-build
+          # is forced on — the verifiable build needs Anchor.toml.
+          if { [[ "$RUN_SOLANA" != "false" ]] && \
+               [[ -n "$ANCHOR_WORKSPACE_INPUT" || "$RUN_SOLANA" == "true" ]]; } || \
+             [[ "$RUN_VERIFIABLE_BUILD" == "true" ]]; then
             if [[ ! -d "$ANCHOR_WORKSPACE" ]]; then
               echo "::error::anchor-workspace '$ANCHOR_WORKSPACE' does not exist"
               exit 1
@@ -161,26 +172,33 @@ jobs:
             HAS_RUST=false
           fi
 
-          # Anchor detection — Anchor.toml at the root of anchor-workspace.
-          # No fallback to anchor-lang dependency: off-chain services that
-          # consume anchor-client are not Anchor programs.
+          # anchor-present: pure file-existence signal, decoupled from
+          # run-solana. Used by verifiable-build so a caller can disable
+          # sec3-xray / solana-lints (run-solana=false) yet still build.
+          if [[ -d "$ANCHOR_WORKSPACE" && -f "$ANCHOR_WORKSPACE/Anchor.toml" ]]; then
+            ANCHOR_PRESENT=true
+          else
+            ANCHOR_PRESENT=false
+          fi
+
+          # has-anchor: gates sec3-xray and solana-lints. Respects
+          # run-solana's force on/off.
           if [[ "$RUN_SOLANA" == "true" ]]; then
             HAS_ANCHOR=true
           elif [[ "$RUN_SOLANA" == "false" ]]; then
             HAS_ANCHOR=false
-          elif [[ -d "$ANCHOR_WORKSPACE" && -f "$ANCHOR_WORKSPACE/Anchor.toml" ]]; then
-            HAS_ANCHOR=true
           else
-            HAS_ANCHOR=false
+            HAS_ANCHOR=$ANCHOR_PRESENT
           fi
 
           echo "has-rust=$HAS_RUST" >> "$GITHUB_OUTPUT"
           echo "has-anchor=$HAS_ANCHOR" >> "$GITHUB_OUTPUT"
+          echo "anchor-present=$ANCHOR_PRESENT" >> "$GITHUB_OUTPUT"
 
           {
             echo "## Detection results"
             echo "- Rust workspace: \`$RUST_WORKSPACE\` → has-rust=\`$HAS_RUST\`"
-            echo "- Anchor workspace: \`$ANCHOR_WORKSPACE\` → has-anchor=\`$HAS_ANCHOR\`"
+            echo "- Anchor workspace: \`$ANCHOR_WORKSPACE\` → has-anchor=\`$HAS_ANCHOR\` (anchor-present=\`$ANCHOR_PRESENT\`)"
           } >> "$GITHUB_STEP_SUMMARY"
 
   clippy:
@@ -418,14 +436,19 @@ jobs:
 
   verifiable-build:
     needs: detect
-    # Runs automatically on push to the default branch, and on-demand via
-    # workflow_dispatch on any branch (useful for ad-hoc release builds and
-    # for testing this workflow on feature branches).
+    # Gated on `anchor-present` (file existence) rather than `has-anchor`
+    # (which is overridden by run-solana). This lets a caller request only
+    # the verifiable build — run-rust='false', run-solana='false',
+    # run-verifiable-build='true' — without dragging clippy / cargo-deny /
+    # sec3-xray / solana-lints along.
     if: >-
-      needs.detect.outputs.has-anchor == 'true' && (
-        (github.event_name == 'push' &&
-         github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
-        || github.event_name == 'workflow_dispatch'
+      needs.detect.outputs.anchor-present == 'true' && (
+        inputs.run-verifiable-build == 'true' ||
+        (inputs.run-verifiable-build == 'auto' && (
+          (github.event_name == 'push' &&
+           github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+          || github.event_name == 'workflow_dispatch'
+        ))
       )
     runs-on: ubuntu-24.04
     defaults:
