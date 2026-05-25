@@ -25,6 +25,9 @@ ignore = [
   "RUSTSEC-2025-0161",
   # rand unsoundness with custom logger. Pulled via solana-sdk / spl-pod.
   "RUSTSEC-2026-0097",
+  # yaml-rust unmaintained. Pulled via serde_yaml 0.8.x (which is itself
+  # unmaintained). Workspaces should migrate to serde_yaml_ng / serde_yml.
+  "RUSTSEC-2024-0320",
 ]
 
 # Permissive-only allow list. Anything copyleft (GPL/LGPL/AGPL/EUPL/EPL),
@@ -32,6 +35,9 @@ ignore = [
 # without an explicit security review — the goal is that downstream consumers
 # can ship binaries built from this tree without source-disclosure obligations.
 [licenses]
+# Skip license validation for workspace crates marked `publish = false`;
+# published deps are still strictly checked against the allow-list below.
+private = { ignore = true }
 allow = [
   # Classic permissive
   "MIT",
@@ -63,6 +69,9 @@ exceptions = []
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Allow `version = "*"` for path/workspace deps when the depending crate is
+# `publish = false`. Registry wildcards (e.g. `serde = "*"`) still fail.
+allow-wildcard-paths = true
 deny = []
 skip = []
 skip-tree = []

@@ -200,6 +200,16 @@ jobs:
           toolchain: ${{ inputs.rust-toolchain }}
           components: clippy
 
+      # Consumer's rust-toolchain.toml overrides the toolchain installed above;
+      # add clippy for whatever cargo will actually invoke in the workspace.
+      - name: Ensure clippy is installed for the active toolchain
+        working-directory: ${{ inputs.rust-workspace }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup show active-toolchain
+          rustup component add clippy
+
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: ${{ inputs.rust-workspace }}
