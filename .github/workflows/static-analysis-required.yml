@@ -1,29 +1,3 @@
-# Org-required entrypoint for the static-analysis pipeline. This thin
-# wrapper exists because GitHub repository rulesets can only enforce
-# workflows whose `on:` includes a direct PR-event trigger; the reusable
-# `static-analysis.yml` is `workflow_call:`-only and would be rejected
-# when attached to a ruleset.
-#
-# Behaviour:
-#   - Runs on every pull_request and merge_group event in any repo
-#     where this workflow is required via a ruleset.
-#   - Calls the reusable `static-analysis.yml` with sensible defaults.
-#   - Each input below reads `vars.STATIC_ANALYSIS_<INPUT>` first,
-#     falling back to the reusable workflow's own default when unset.
-#     Per-repo overrides go in Settings → Secrets and variables →
-#     Actions → Variables. Examples:
-#       STATIC_ANALYSIS_RUST_WORKSPACE=./rust
-#       STATIC_ANALYSIS_ANCHOR_WORKSPACE=./on-chain
-#       STATIC_ANALYSIS_ANCHOR_CLI_VERSION=0.30.1
-#       STATIC_ANALYSIS_CLIPPY_DENY_WARNINGS=false
-#       STATIC_ANALYSIS_RUN_RUST=false
-#       STATIC_ANALYSIS_RUN_SOLANA=false
-#
-# Toolchain pins and security-sensitive inputs (rust-toolchain,
-# solana-lints-toolchain, cargo-dylint-version, xray-version,
-# xray-sha256, solana-lints-ref, solana-verify-version, deny-config)
-# are intentionally NOT exposed for per-repo override — they're tied
-# to upstream compatibility and should move in lockstep across the org.
 name: Static Analysis
 
 on:
@@ -43,7 +17,4 @@ jobs:
       run-rust:             ${{ vars.STATIC_ANALYSIS_RUN_RUST             || 'auto' }}
       run-solana:           ${{ vars.STATIC_ANALYSIS_RUN_SOLANA           || 'auto' }}
       anchor-cli-version:   ${{ vars.STATIC_ANALYSIS_ANCHOR_CLI_VERSION   || '0.31.1' }}
-      # `clippy-deny-warnings` is typed `boolean` in the reusable; cast
-      # the string variable to a bool. Empty / anything except literal
-      # 'false' keeps the strict-by-default behaviour.
       clippy-deny-warnings: ${{ vars.STATIC_ANALYSIS_CLIPPY_DENY_WARNINGS != 'false' }}
