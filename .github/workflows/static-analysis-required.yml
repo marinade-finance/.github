@@ -3,6 +3,9 @@ name: Static Analysis
 on:
   pull_request:
   merge_group:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
 
 permissions:
   contents: read
