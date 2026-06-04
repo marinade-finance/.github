@@ -1,16 +1,5 @@
 name: Verify deployments (reusable)
 
-# Manually-triggered reusable workflow. Builds programs verifiably with
-# `solana-verify`, then for every program declared under `[programs.<cluster>]`
-# in Anchor.toml, fetches the on-chain hash and compares.
-#
-# Consumers should wrap this in a workflow with `on: workflow_dispatch:`.
-
-# Cap the GITHUB_TOKEN at workflow scope to the minimum the job needs.
-# This workflow only reads code (verifiable build + RPC reads against
-# on-chain program hashes) and never writes to the repo or to any
-# protected resource. Setting permissions here overrides whatever the
-# caller granted.
 permissions:
   contents: read
 
@@ -55,10 +44,6 @@ jobs:
       run:
         working-directory: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
     steps:
-      # `persist-credentials: false`: this job only reads code (verifiable
-      # build, compares on-chain hashes), never pushes. Drop the
-      # GITHUB_TOKEN that checkout would otherwise leave in `.git/config`
-      # so a downstream step or third-party build script can't use it.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
@@ -66,8 +51,8 @@ jobs:
       - name: Validate Anchor workspace
         env:
           ANCHOR_WORKSPACE: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
-        # Run from $GITHUB_WORKSPACE so this step doesn't itself fail with a
-        # cd error if the configured directory is missing.
+        # Run from $GITHUB_WORKSPACE so this step doesn't fail with a cd
+        # error if the configured directory is missing.
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -108,13 +93,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Emit one row per (cluster, program_name, program_id) from Anchor.toml.
-          # Redirect python3 output to a temp file (rather than using
-          # `mapfile -t entries < <(python3 ...)`) so a non-zero exit from
-          # tomllib — e.g., a malformed Anchor.toml — fails the step under
-          # `set -e`. With process substitution, the subshell's exit status
-          # isn't propagated and a parse error would silently degrade to
-          # "no [programs.*] sections" and a clean exit.
+          # Redirect python3 to a temp file rather than `mapfile -t entries
+          # < <(python3 ...)`: process substitution doesn't propagate the
+          # subshell's exit status, so a tomllib parse error on a malformed
+          # Anchor.toml would silently degrade to "no [programs.*] sections"
+          # and a clean exit.
           ENTRIES_FILE="${RUNNER_TEMP:-/tmp}/anchor-programs.tsv"
           python3 - > "$ENTRIES_FILE" <<'PY'
           import tomllib
@@ -156,7 +139,7 @@ jobs:
               mainnet|mainnet-beta)  echo "$MAINNET_URL" ;;
               devnet)                echo "$DEVNET_URL" ;;
               testnet)               echo "$TESTNET_URL" ;;
-              *)                     echo "$1" ;;  # treat unknown as a literal URL/moniker
+              *)                     echo "$1" ;;
             esac
           }
 
