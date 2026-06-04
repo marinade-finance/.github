@@ -44,12 +44,12 @@ on:
         default: ""
         type: string
       rust-toolchain:
-        description: "Toolchain for clippy"
+        description: "Toolchain for clippy when the workspace doesn't pin its own via rust-toolchain[.toml]. When a pin exists, that toolchain wins and clippy is installed on it."
         required: false
         default: "stable"
         type: string
       solana-lints-toolchain:
-        description: "Nightly toolchain for solana-lints (must match upstream crytic/solana-lints rust-toolchain)"
+        description: "Nightly toolchain for solana-lints (must match upstream crytic/solana-lints rust-toolchain). Forced via RUSTUP_TOOLCHAIN at dylint time so a workspace rust-toolchain[.toml] pin can't override it."
         required: false
         default: "nightly-2025-01-09"
         type: string
@@ -217,6 +217,25 @@ jobs:
         with:
           toolchain: ${{ inputs.rust-toolchain }}
           components: clippy
+
+      # If the workspace pins its own toolchain via rust-toolchain[.toml],
+      # `cargo clippy` invoked in this directory uses *that* toolchain
+      # rather than the one dtolnay/rust-toolchain just installed —
+      # and the pinned toolchain almost never carries the `clippy`
+      # component out of the box ("'cargo-clippy' is not installed for
+      # the toolchain '1.88.0-x86_64-unknown-linux-gnu'"). Install
+      # clippy on the pinned toolchain so the run uses the same compiler
+      # the project targets.
+      - name: Install clippy on workspace-pinned toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f rust-toolchain.toml || -f rust-toolchain ]]; then
+            # `rustup show` is enough to trigger install of the
+            # toml-pinned toolchain when run inside the workspace.
+            rustup show
+            rustup component add clippy
+          fi
 
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
@@ -432,6 +451,12 @@ jobs:
       - name: Run dylint
         env:
           DYLINT_LIBRARY_PATH: /tmp/solana-lints/target/release
+          # Force the lints toolchain via RUSTUP_TOOLCHAIN: it takes
+          # precedence over a workspace `rust-toolchain[.toml]` pin. The
+          # lint .so files and the dylint driver are both built against
+          # `solana-lints-toolchain`; cargo running under any other rustc
+          # in this workspace would fail to load them.
+          RUSTUP_TOOLCHAIN: ${{ inputs.solana-lints-toolchain }}
         run: cargo dylint --all -- --all-targets
 
   verifiable-build:
