@@ -1,12 +1,5 @@
 name: Static Analysis (reusable)
 
-# Cap the GITHUB_TOKEN at workflow scope to the minimum every job needs.
-# None of the jobs below write to the repo — they read code, run lints,
-# build artifacts, and (for verifiable-build) upload an artifact via the
-# Actions Cache API, which doesn't need any token scope. Declaring
-# permissions here overrides whatever the caller granted, so a caller
-# with a broader default token can't accidentally widen the blast radius
-# of any compromised step or third-party action.
 permissions:
   contents: read
 
@@ -94,23 +87,14 @@ on:
         default: "0.4.15"
         type: string
 
-# `persist-credentials: false` on every actions/checkout: none of the jobs
-# below push back to the repo (they only read code, run lints, build
-# artifacts, upload-artifact), so the default `GITHUB_TOKEN` injected into
-# git config by checkout is dead weight. Dropping it limits the blast radius
-# of any compromised step or third-party action — a downstream `cargo`
-# build script can no longer use the token to read or push to the repo.
-
 jobs:
   detect:
     runs-on: ubuntu-24.04
     outputs:
       has-rust: ${{ steps.check.outputs.has-rust }}
       has-anchor: ${{ steps.check.outputs.has-anchor }}
-      # File-existence-only signal for Anchor.toml. Unlike has-anchor it is
-      # NOT overridden by run-solana, so a caller that sets run-solana=false
-      # but still wants verifiable-build to run on the same Anchor program
-      # can use anchor-present to decide.
+      # File-existence-only signal for Anchor.toml; independent of run-solana
+      # so callers with run-solana=false can still run verifiable-build.
       anchor-present: ${{ steps.check.outputs.anchor-present }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -134,11 +118,7 @@ jobs:
             exit 1
           fi
 
-          # Validate the Anchor workspace whenever any flag explicitly asks
-          # for an Anchor-dependent job (run-solana=true, an explicit
-          # anchor-workspace, or run-verifiable-build=true). run-solana=false
-          # alone no longer skips this validation when run-verifiable-build
-          # is forced on — the verifiable build needs Anchor.toml.
+          # Fail fast on missing Anchor.toml when a flag explicitly requires it.
           if { [[ "$RUN_SOLANA" != "false" ]] && \
                [[ -n "$ANCHOR_WORKSPACE_INPUT" || "$RUN_SOLANA" == "true" ]]; } || \
              [[ "$RUN_VERIFIABLE_BUILD" == "true" ]]; then
@@ -152,12 +132,6 @@ jobs:
             fi
           fi
 
-          # Rust detection — require Cargo.toml at the workspace root, since
-          # `cargo clippy` and `cargo-deny` both need a root manifest. A nested
-          # crate without a root manifest would otherwise enable jobs that fail.
-          # When run-rust is forced 'true', assert the root manifest exists so
-          # callers get a clear configuration error instead of a cryptic
-          # Cargo error in the downstream clippy/cargo-deny jobs.
           if [[ "$RUN_RUST" == "true" ]]; then
             if [[ ! -f "$RUST_WORKSPACE/Cargo.toml" ]]; then
               echo "::error::run-rust='true' but Cargo.toml not found at '$RUST_WORKSPACE/Cargo.toml'"
@@ -172,17 +146,12 @@ jobs:
             HAS_RUST=false
           fi
 
-          # anchor-present: pure file-existence signal, decoupled from
-          # run-solana. Used by verifiable-build so a caller can disable
-          # sec3-xray / solana-lints (run-solana=false) yet still build.
           if [[ -d "$ANCHOR_WORKSPACE" && -f "$ANCHOR_WORKSPACE/Anchor.toml" ]]; then
             ANCHOR_PRESENT=true
           else
             ANCHOR_PRESENT=false
           fi
 
-          # has-anchor: gates sec3-xray and solana-lints. Respects
-          # run-solana's force on/off.
           if [[ "$RUN_SOLANA" == "true" ]]; then
             HAS_ANCHOR=true
           elif [[ "$RUN_SOLANA" == "false" ]]; then
@@ -219,20 +188,14 @@ jobs:
           components: clippy
 
       # If the workspace pins its own toolchain via rust-toolchain[.toml],
-      # `cargo clippy` invoked in this directory uses *that* toolchain
-      # rather than the one dtolnay/rust-toolchain just installed —
-      # and the pinned toolchain almost never carries the `clippy`
-      # component out of the box ("'cargo-clippy' is not installed for
-      # the toolchain '1.88.0-x86_64-unknown-linux-gnu'"). Install
-      # clippy on the pinned toolchain so the run uses the same compiler
-      # the project targets.
+      # `cargo clippy` uses that pin — not the one dtolnay just installed —
+      # and the pin almost never carries the clippy component. Install
+      # clippy on the pinned toolchain too.
       - name: Install clippy on workspace-pinned toolchain
         shell: bash
         run: |
           set -euo pipefail
           if [[ -f rust-toolchain.toml || -f rust-toolchain ]]; then
-            # `rustup show` is enough to trigger install of the
-            # toml-pinned toolchain when run inside the workspace.
             rustup show
             rustup component add clippy
           fi
@@ -258,15 +221,11 @@ jobs:
         with:
           persist-credentials: false
 
-      # Write deny.toml inside ${{ github.workspace }} (mounted at the same
-      # path on host and inside the cargo-deny-action's docker container —
-      # /home/runner/work/<repo>/<repo> ↔ /github/workspace, with the
-      # action's working directory pinned to the workspace), then pass a
-      # relative `--config` path so it resolves identically in both. Writing
-      # to ${{ runner.temp }} doesn't work: that dir is mounted at
-      # /github/runner_temp inside the container, so an absolute host path
-      # like /home/runner/work/_temp/deny.toml doesn't exist there and
-      # cargo-deny silently falls back to its default config.
+      # Write deny.toml inside the workspace, not ${{ runner.temp }}: the
+      # cargo-deny-action's docker container mounts /home/runner/work/_temp
+      # to /github/runner_temp, so an absolute host path doesn't exist
+      # inside the container and cargo-deny silently falls back to its
+      # default config.
       - name: Fetch cargo-deny config
         env:
           DENY_CONFIG_URL: ${{ inputs.deny-config }}
@@ -283,10 +242,6 @@ jobs:
     needs: detect
     if: needs.detect.outputs.has-anchor == 'true'
     runs-on: ubuntu-24.04
-    # X-Ray (and the `anchor` CLI it shells out to for IDL extraction) needs
-    # to run from the Anchor workspace so it can find Anchor.toml and the
-    # programs/ directory. Setup steps below override this to the repo root
-    # via `working-directory: ${{ github.workspace }}` where appropriate.
     defaults:
       run:
         working-directory: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
@@ -335,9 +290,8 @@ jobs:
 
       - name: Verify tool installations
         working-directory: ${{ github.workspace }}
-        # Avoid piping `xray --help` under `pipefail`: `head -20` exits early
-        # and the SIGPIPE can fail the step. Use a brace group with a tail
-        # `|| true` so the fallback is genuinely best-effort.
+        # Wrap `xray --help | head -20` so SIGPIPE from `head` doesn't fail
+        # the step under `pipefail`.
         run: |
           set -euo pipefail
           if ! xray --version 2>&1; then
@@ -347,19 +301,13 @@ jobs:
 
       - name: Run X-Ray
         env:
-          # anchor-programs-path is resolved against the job's
-          # working-directory (anchor-workspace), so the default `programs`
-          # works for the standard Anchor layout regardless of where the
-          # workspace lives in the repo.
           ANCHOR_PROGRAMS_PATH: ${{ inputs.anchor-programs-path || 'programs' }}
-        # X-Ray exits 0 even when sub-tools (anchor, the LLVM IR pass) emit
-        # errors and the final "no issues detected" path is reached. Capture
-        # output and fail on subprocess failures (`sh: <n>:`) and X-Ray's own
-        # fatal output (`Error:` / `ERROR:`). Do NOT match generic `: error: `
-        # MLIR/LLVM diagnostics — X-Ray's IR-lowering pass spuriously emits
-        # those on perfectly valid Anchor code (e.g. `'llvm.call' op calling
-        # function with void result must not produce values` on `&mut`
-        # references), making the gate unusable in practice.
+        # X-Ray exits 0 even when sub-tools emit errors, so capture the log
+        # and fail on subprocess failures (`sh: <n>:`) and X-Ray's own fatal
+        # output (`Error:` / `ERROR:`). Do NOT match generic `: error: `
+        # MLIR/LLVM diagnostics — X-Ray's IR-lowering pass emits those on
+        # perfectly valid Anchor code (e.g. `'llvm.call' op calling function
+        # with void result must not produce values` on `&mut` references).
         run: |
           set -euo pipefail
           if [[ ! -d "$ANCHOR_PROGRAMS_PATH" ]]; then
@@ -391,18 +339,15 @@ jobs:
         with:
           persist-credentials: false
 
-      # Install stable first, then nightly. Order matters: dtolnay/rust-toolchain
-      # makes the most-recently-installed toolchain the rustup default. We want
-      # nightly as the default for the lint builds and the `cargo dylint` run,
-      # but cargo-dylint/dylint-link are user-space tools that don't need
-      # nightly. Install stable, install the dylint tools (taiki-e/install-action
-      # falls back to `cargo install` when no prebuilt is published, picking up
-      # whatever rustc is the active default), then install nightly.
+      # Install stable BEFORE nightly. dtolnay/rust-toolchain makes the
+      # most-recently-installed toolchain the rustup default, and we want
+      # nightly to win for the dylint run. Installing stable first also
+      # ensures taiki-e's cargo-install fallback for cargo-dylint /
+      # dylint-link builds against stable, not the pinned nightly.
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
           toolchain: stable
 
-      # cargo-dylint pinned via input; see input description for rationale.
       - name: Install dylint
         uses: taiki-e/install-action@cca35edeb1d01366c2843b68fc3ca441446d73d3 # v2
         with:
@@ -432,14 +377,12 @@ jobs:
           path: /tmp/solana-lints/target/release
           key: solana-lints-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ inputs.solana-lints-ref }}
 
+      # solana-lints' root [workspace] only contains `crate`, not `lints/*`,
+      # so each lint must be built independently. CARGO_TARGET_DIR pools
+      # them into one target dir so DYLINT_LIBRARY_PATH below resolves.
       - name: Build lints
         if: steps.lints-cache.outputs.cache-hit != 'true'
         working-directory: /tmp/solana-lints
-        # solana-lints is not a single Cargo workspace (root [workspace] only
-        # contains `crate`, not `lints/*`), so each lint must be built
-        # independently. Set CARGO_TARGET_DIR so all lints share one target
-        # dir — otherwise each lint builds into lints/<name>/target/release/
-        # and the cache path + DYLINT_LIBRARY_PATH below don't match reality.
         env:
           CARGO_TARGET_DIR: /tmp/solana-lints/target
         run: |
@@ -451,21 +394,18 @@ jobs:
       - name: Run dylint
         env:
           DYLINT_LIBRARY_PATH: /tmp/solana-lints/target/release
-          # Force the lints toolchain via RUSTUP_TOOLCHAIN: it takes
-          # precedence over a workspace `rust-toolchain[.toml]` pin. The
-          # lint .so files and the dylint driver are both built against
-          # `solana-lints-toolchain`; cargo running under any other rustc
-          # in this workspace would fail to load them.
+          # RUSTUP_TOOLCHAIN beats a workspace rust-toolchain[.toml] pin in
+          # rustup's resolution order. The lint .so files and dylint driver
+          # are both built against `solana-lints-toolchain`; cargo running
+          # any other rustc would fail to load them.
           RUSTUP_TOOLCHAIN: ${{ inputs.solana-lints-toolchain }}
         run: cargo dylint --all -- --all-targets
 
   verifiable-build:
     needs: detect
-    # Gated on `anchor-present` (file existence) rather than `has-anchor`
-    # (which is overridden by run-solana). This lets a caller request only
-    # the verifiable build — run-rust='false', run-solana='false',
-    # run-verifiable-build='true' — without dragging clippy / cargo-deny /
-    # sec3-xray / solana-lints along.
+    # Gated on `anchor-present` (file existence), not `has-anchor` (which
+    # is overridden by run-solana), so a caller can ask for verifiable-build
+    # alone without sec3-xray / solana-lints.
     if: >-
       needs.detect.outputs.anchor-present == 'true' && (
         inputs.run-verifiable-build == 'true' ||
