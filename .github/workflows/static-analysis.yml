@@ -188,17 +188,28 @@ jobs:
           components: clippy
 
       # If the workspace pins its own toolchain via rust-toolchain[.toml],
-      # `cargo clippy` uses that pin — not the one dtolnay just installed —
-      # and the pin almost never carries the clippy component. Install
-      # clippy on the pinned toolchain too.
+      # `cargo clippy` uses that pin — not the one dtolnay just installed.
+      # Pull the pinned toolchain name out of `rustup show active-toolchain`
+      # (which reads the toml without needing the toolchain to be installed
+      # yet), then install it explicitly with clippy. Using `--toolchain`
+      # avoids any "which toolchain is active right now?" ambiguity that
+      # bit the earlier `rustup component add clippy` approach.
       - name: Install clippy on workspace-pinned toolchain
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f rust-toolchain.toml || -f rust-toolchain ]]; then
-            rustup show
-            rustup component add clippy
+          if [[ ! -f rust-toolchain.toml && ! -f rust-toolchain ]]; then
+            echo "No workspace-pinned toolchain; relying on the one dtolnay installed."
+            exit 0
           fi
+          ACTIVE=$(rustup show active-toolchain | awk '{print $1}')
+          if [[ -z "$ACTIVE" ]]; then
+            echo "::error::rust-toolchain[.toml] present but rustup couldn't resolve the pinned toolchain"
+            exit 1
+          fi
+          echo "Workspace pins '$ACTIVE'; installing it with clippy."
+          rustup toolchain install "$ACTIVE" --component clippy --no-self-update
+          rustup show
 
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
