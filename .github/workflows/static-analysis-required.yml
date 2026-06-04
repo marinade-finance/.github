@@ -9,7 +9,10 @@ permissions:
 
 jobs:
   static-analysis:
-    uses: marinade-finance/.github/.github/workflows/static-analysis.yml@main
+    # TEMPORARY: pointed at the wrapper's branch so pre-merge testing
+    # exercises the same `static-analysis.yml` that PR #6 introduces.
+    # Revert to `@main` before merging this PR.
+    uses: marinade-finance/.github/.github/workflows/static-analysis.yml@claude/static-analysis-required-wrapper
     with:
       rust-workspace:       ${{ vars.STATIC_ANALYSIS_RUST_WORKSPACE       || '.' }}
       anchor-workspace:     ${{ vars.STATIC_ANALYSIS_ANCHOR_WORKSPACE     || '' }}
