@@ -211,6 +211,22 @@ jobs:
           rustup toolchain install "$ACTIVE" --component clippy --no-self-update
           rustup show
 
+      # Some workspaces transitively depend on clang-sys (via bindgen etc.).
+      # Its build script needs libclang + llvm-config at compile time, and
+      # the ubuntu-24.04 image doesn't ship libclang-dev by default — only
+      # the runtime .so under /usr/lib/llvm-*/lib, which clang-sys won't
+      # discover without llvm-config in PATH. Install on demand based on
+      # Cargo.lock so repos that don't pull clang-sys pay no extra time.
+      - name: Install libclang for clang-sys (if used)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f Cargo.lock ]] && grep -q '^name = "clang-sys"' Cargo.lock; then
+            echo "clang-sys detected in Cargo.lock — installing libclang-dev"
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends libclang-dev
+          fi
+
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: ${{ inputs.rust-workspace }}
@@ -368,6 +384,19 @@ jobs:
         with:
           toolchain: ${{ inputs.solana-lints-toolchain }}
           components: rustc-dev, llvm-tools-preview
+
+      # See identical step in clippy job; cargo dylint compiles the
+      # workspace via `cargo check`, so any clang-sys build script in the
+      # dep tree triggers the same libclang lookup.
+      - name: Install libclang for clang-sys (if used)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f Cargo.lock ]] && grep -q '^name = "clang-sys"' Cargo.lock; then
+            echo "clang-sys detected in Cargo.lock — installing libclang-dev"
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends libclang-dev
+          fi
 
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
