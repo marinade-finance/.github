@@ -103,11 +103,20 @@ private = { ignore = true }
 # Clarify the license for crates that don't declare one in the relevant
 # release's manifest but are licensed upstream. Each expression below is a
 # verified, permissive license:
-#  - marinade-finance first-party crates consumed as git deps before they
-#    stamp a license in their own Cargo.toml (Apache-2.0, like the rest of the
-#    org). Prefer fixing the manifest upstream where we own the repo.
 #  - mpl-token-metadata 5.x ships without a license field despite Metaplex
-#    publishing it under Apache-2.0.
+#    publishing it under Apache-2.0. This is third-party, so clarifying here
+#    is the right long-term home.
+#  - TEMPORARY: the marinade-finance first-party crates below
+#    (solana-transaction-*, solana-snapshot-parser) have no `license` field in
+#    their own Cargo.toml. The real fix is to add `license = "Apache-2.0"` in
+#    those repos directly; remove these entries once that lands and the
+#    consuming repos re-pin. Tracked as a follow-up — see the open PRs.
+[[licenses.clarify]]
+crate = "mpl-token-metadata"
+expression = "Apache-2.0"
+license-files = []
+
+# TEMP (fix upstream, then delete): marinade-finance crates missing a license field.
 [[licenses.clarify]]
 crate = "snapshot-parser"
 expression = "Apache-2.0"
@@ -130,11 +139,6 @@ license-files = []
 
 [[licenses.clarify]]
 crate = "solana-transaction-executor"
-expression = "Apache-2.0"
-license-files = []
-
-[[licenses.clarify]]
-crate = "mpl-token-metadata"
 expression = "Apache-2.0"
 license-files = []
 
