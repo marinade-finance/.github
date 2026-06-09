@@ -79,7 +79,11 @@ on:
       deny-config:
         description: "URL of the cargo-deny config to use. Pin to a tag/SHA for stable behavior across reusable-workflow versions."
         required: false
-        default: "https://raw.githubusercontent.com/marinade-finance/.github/main/deny.toml"
+        # TEMPORARY: pointed at this wrapper branch so pre-merge validation
+        # exercises the deny.toml that PR #6 introduces (matching the branch
+        # the `uses:` in static-analysis-required.yml is pinned to). Revert
+        # to `.../main/deny.toml` before merging this PR.
+        default: "https://raw.githubusercontent.com/marinade-finance/.github/claude/static-analysis-required-wrapper/deny.toml"
         type: string
       solana-verify-version:
         description: "solana-verify CLI version (Ellipsis Labs/solana-verifiable-build) to install for the verifiable-build job."

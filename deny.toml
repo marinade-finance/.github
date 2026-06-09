@@ -25,6 +25,14 @@ ignore = [
   "RUSTSEC-2025-0161",
   # rand unsoundness with custom logger. Pulled via solana-sdk / spl-pod.
   "RUSTSEC-2026-0097",
+  # rustls-webpki 0.101.x (EOL) cert-validation bugs: URI/wildcard name
+  # constraints and a reachable CRL-parsing panic. Fixed in the 0.102/0.103
+  # lines but the 0.101 line is end-of-life. Pulled via the old rustls 0.21
+  # / tokio-tungstenite 0.20 stack that solana-pubsub-client still pins.
+  # Drop these once the Solana websocket client upgrades tungstenite/rustls.
+  "RUSTSEC-2026-0098",
+  "RUSTSEC-2026-0099",
+  "RUSTSEC-2026-0104",
 ]
 
 # Permissive-only allow list. Anything copyleft (GPL/LGPL/AGPL/EUPL/EPL),
@@ -59,10 +67,21 @@ allow = [
 ]
 confidence-threshold = 0.93
 exceptions = []
+# First-party workspace crates are routinely unpublished (`publish = false`)
+# and carry no `license` field — they're internal binaries, integration-test
+# crates, and not-yet-released SDKs. Skip the license check for those rather
+# than forcing every repo to stamp a license on internal crates just to make
+# the supply-chain license gate (which is about third-party deps) pass.
+private = { ignore = true }
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Path dependencies between workspace members are conventionally declared
+# without a version (`foo = { path = "../foo" }`), which cargo-deny would
+# otherwise flag as a wildcard. Allow wildcards *only* for path deps; a
+# wildcard on a crates.io dependency is still denied.
+allow-wildcard-paths = true
 deny = []
 skip = []
 skip-tree = []
