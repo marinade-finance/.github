@@ -25,6 +25,22 @@ ignore = [
   "RUSTSEC-2025-0161",
   # rand unsoundness with custom logger. Pulled via solana-sdk / spl-pod.
   "RUSTSEC-2026-0097",
+  # --- Newly surfaced (2026-06) via validator-bonds; all transitive. ---
+  # Unmaintained crates (no action without upstream bumps):
+  "RUSTSEC-2021-0139",  # ansi_term unmaintained
+  "RUSTSEC-2025-0012",  # backoff unmaintained
+  "RUSTSEC-2024-0384",  # instant unmaintained
+  "RUSTSEC-2024-0370",  # proc-macro-error unmaintained
+  "RUSTSEC-2026-0173",  # proc-macro-error2 unmaintained
+  "RUSTSEC-2025-0134",  # rustls-pemfile unmaintained
+  "RUSTSEC-2024-0320",  # yaml-rust unmaintained (via serde_yaml 0.8)
+  # rustls-webpki advisories — LOW severity / narrow scope:
+  # 0098/0099 affect private PKIs using URI name constraints (public Web PKI / HTTPS unaffected);
+  # 0104 only affects apps that parse CRL
+  "RUSTSEC-2026-0049",  # rustls-webpki: CRL distribution-point matching
+  "RUSTSEC-2026-0098",  # rustls-webpki: URI-name constraints incorrectly accepted
+  "RUSTSEC-2026-0099",  # rustls-webpki: name constraints accepted for wildcard cert
+  "RUSTSEC-2026-0104",  # rustls-webpki: reachable panic in CRL parsing
 ]
 
 # Permissive-only allow list. Anything copyleft (GPL/LGPL/AGPL/EUPL/EPL),
@@ -59,10 +75,15 @@ allow = [
 ]
 confidence-threshold = 0.93
 exceptions = []
+# Skip license checks for first-party unpublished workspace crates (publish = false).
+private = { ignore = true }
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# First-party workspace crates reference each other by path (no version); allowed
+# because they are publish = false (not published to crates.io).
+allow-wildcard-paths = true
 deny = []
 skip = []
 skip-tree = []
@@ -71,4 +92,8 @@ skip-tree = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+allow-git = [
+  "https://github.com/marinade-finance/solana-snapshot-parser",
+  "https://github.com/marinade-finance/solana-transaction-executor",
+  "https://github.com/marinade-finance/solana-transaction-builder",
+]
