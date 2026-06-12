@@ -137,14 +137,25 @@ It produces a sha256 hash table for each compiled program in the run's job summa
 
 The build runs inside Ellipsis Labs's `solana-verifiable-build` Docker image (invoked by `solana-verify build`), so the produced binary is bit-for-bit reproducible.
 
-To enable manual triggering, add `workflow_dispatch:` to the consumer wrapper:
+**The centrally-required static analysis can never run this job.** Ruleset-required workflows are only triggered on `pull_request` / `merge_group` events, the `auto` gate needs `push` to the default branch or `workflow_dispatch`, and a `workflow_call`-only reusable workflow has no "Run workflow" button. To get verifiable builds, add a dedicated wrapper **in the consumer repo** at `.github/workflows/verifiable-build.yml`:
 
 ```yaml
+name: Verifiable Build
 on:
-  pull_request:
   push:
-    branches: [main]
-  workflow_dispatch:        # enables manual verifiable-build runs on any branch
+    branches: [main]      # adjust if the default branch is named differently
+  workflow_dispatch:      # enables manual runs on any branch
+permissions:
+  contents: read
+jobs:
+  verifiable-build:
+    uses: marinade-finance/.github/.github/workflows/static-analysis.yml@main
+    with:
+      run-rust: 'false'    # clippy/cargo-deny/x-ray/lints already run via the
+      run-solana: 'false'  # required PR workflow; this wrapper builds only
+      # run-verifiable-build defaults to 'auto': runs on push to the default
+      # branch and on workflow_dispatch. Set 'true' to force it on any event.
+      # anchor-workspace: ./on-chain   # if Anchor.toml is not at the repo root
 ```
 
 ### Verify deployments (manual)
