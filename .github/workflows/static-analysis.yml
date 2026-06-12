@@ -406,29 +406,51 @@ jobs:
         with:
           workspaces: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
 
-      # ahash < 0.7.8 / < 0.8.7 probes the compiler at build time and enables
-      # its `stdsimd` nightly feature on any nightly — but `feature(stdsimd)`
-      # was removed from rustc in 1.78, so those versions fail to compile on
-      # the modern nightly we force for dylint (E0635), even though they build
-      # fine on the workspace's own stable/pinned toolchain. Bump affected
-      # lockfile entries to the patched semver-compatible releases. This only
-      # mutates the CI checkout's Cargo.lock; the repo itself is untouched.
-      - name: Patch ahash in Cargo.lock for modern nightly (stdsimd removal)
+      # Solana repos often lock dependency versions that no longer compile on
+      # a modern rustc, even though they build fine on the workspace's own
+      # stable/pinned toolchain. The dylint run forces a recent nightly, so
+      # bump the known offenders to their patched semver-compatible releases:
+      #   - ahash < 0.7.8 / < 0.8.7 probes the compiler at build time and
+      #     enables its `stdsimd` nightly feature on any nightly, but
+      #     `feature(stdsimd)` was removed in rustc 1.78 (E0635).
+      #   - wasm-bindgen < 0.2.88 is rejected outright by rustc >= 1.76
+      #     ("older versions of the `wasm-bindgen` crate are incompatible
+      #     with current versions of Rust"). Its -macro/-backend/-shared
+      #     companions are pinned with `=` requirements, so cargo bumps them
+      #     in lockstep automatically.
+      # This only mutates the CI checkout's Cargo.lock; the repo's committed
+      # lockfile is untouched.
+      - name: Patch nightly-incompatible deps in Cargo.lock
         shell: bash
         env:
           RUSTUP_TOOLCHAIN: ${{ inputs.solana-lints-toolchain }}
         run: |
           set -euo pipefail
           [[ -f Cargo.lock ]] || { echo "No Cargo.lock; skipping."; exit 0; }
-          while IFS= read -r version; do
-            case "$version" in
-              0.7.[0-7]) precise=0.7.8 ;;
-              0.8.[0-6]) precise=0.8.7 ;;
-              *) continue ;;
+          bump() {
+            echo "$1 $2 cannot build on the dylint nightly; updating to $3"
+            cargo update --package "$1@$2" --precise "$3"
+          }
+          while read -r name version; do
+            case "$name" in
+              ahash)
+                case "$version" in
+                  0.7.[0-7]) bump "$name" "$version" 0.7.8 ;;
+                  0.8.[0-6]) bump "$name" "$version" 0.8.7 ;;
+                esac ;;
+              wasm-bindgen)
+                case "$version" in
+                  0.2.*)
+                    if (( ${version##*.} < 88 )); then
+                      bump "$name" "$version" 0.2.88
+                    fi ;;
+                esac ;;
             esac
-            echo "ahash $version cannot build on a post-1.78 nightly; updating to $precise"
-            cargo update --package "ahash@$version" --precise "$precise"
-          done < <(awk '/^name = "ahash"$/ { getline; gsub(/version = |"/, ""); print }' Cargo.lock)
+          done < <(awk '/^name = "(ahash|wasm-bindgen)"$/ {
+                          name = $3; gsub(/"/, "", name)
+                          getline; gsub(/version = |"/, "")
+                          print name, $0
+                        }' Cargo.lock)
 
       - name: Clone solana-lints
         env:
