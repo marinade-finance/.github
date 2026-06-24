@@ -42,9 +42,9 @@ on:
         default: "stable"
         type: string
       solana-lints-toolchain:
-        description: "Nightly toolchain for solana-lints (must match upstream crytic/solana-lints rust-toolchain). Forced via RUSTUP_TOOLCHAIN at dylint time so a workspace rust-toolchain[.toml] pin can't override it."
+        description: "Nightly toolchain for the dylint lints (must match the lints repo's rust-toolchain). otter-sec/anchor-lints pins nightly-2025-09-18 (rustc 1.91); the legacy crytic/trailofbits solana-lints is stuck on nightly-2025-01-09 (rustc 1.86), too old for workspaces whose deps require rustc 1.88. Forced via RUSTUP_TOOLCHAIN at dylint time so a workspace rust-toolchain[.toml] pin can't override it."
         required: false
-        default: "nightly-2025-01-09"
+        default: "nightly-2025-09-18"
         type: string
       clippy-deny-warnings:
         description: "Treat clippy warnings as errors"
@@ -66,15 +66,20 @@ on:
         required: false
         default: "0.31.1"
         type: string
-      solana-lints-ref:
-        description: "crytic/solana-lints git ref (commit SHA or tag) to build lints from"
+      solana-lints-repo:
+        description: "Git URL of the dylint lints to build. Default is otter-sec/anchor-lints (actively maintained, Anchor-focused, edition 2024, a single Cargo workspace). The legacy trailofbits/crytic solana-lints is dormant and stuck on nightly-2025-01-09."
         required: false
-        default: "e0f31e2e69c62a33669bf657343eab2d94e6dc9d"
+        default: "https://github.com/otter-sec/anchor-lints.git"
+        type: string
+      solana-lints-ref:
+        description: "Git ref (commit SHA or tag) of solana-lints-repo to build lints from. Must be compatible with solana-lints-toolchain."
+        required: false
+        default: "d8116dd619414c1b4dd9d17cd66458e66f699c0a"
         type: string
       cargo-dylint-version:
-        description: "cargo-dylint / dylint-link version to install. Pinned to 4.1.0 because dylint_internal 4.1.1+ bumped cargo_metadata from ^0.19 to ^0.22, which pulls cargo-platform 0.3.x (rustc >=1.88) — incompatible with the nightly-2025-01-09 (rustc 1.86) used to build the lints. dylint 4.1.0 uses cargo_metadata 0.19 → cargo-platform 0.1.x, which builds cleanly on 1.86."
+        description: "cargo-dylint / dylint-link version to install. Must match the dylint_linting version the lints repo builds against — otter-sec/anchor-lints uses dylint 5.x; cargo-dylint 5.0.0 builds cleanly on the nightly-2025-09-18 (rustc 1.91) the lints pin."
         required: false
-        default: "4.1.0"
+        default: "5.0.0"
         type: string
       deny-config:
         description: "URL of the cargo-deny config to use. Pin to a tag/SHA for stable behavior across reusable-workflow versions."
@@ -231,6 +236,19 @@ jobs:
             sudo apt-get install -y --no-install-recommends libclang-dev
           fi
 
+      # `cargo clippy --all-features` can pull `hidapi` (Solana hardware-wallet
+      # support behind a feature), whose build script resolves `libudev` via
+      # pkg-config — not on the runner by default. Install on demand by Cargo.lock.
+      - name: Install libudev for hidapi (if used)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f Cargo.lock ]] && grep -q '^name = "hidapi"' Cargo.lock; then
+            echo "hidapi detected in Cargo.lock — installing libudev-dev"
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends libudev-dev pkg-config
+          fi
+
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: ${{ inputs.rust-workspace }}
@@ -257,11 +275,22 @@ jobs:
       # to /github/runner_temp, so an absolute host path doesn't exist
       # inside the container and cargo-deny silently falls back to its
       # default config.
-      - name: Fetch cargo-deny config
+      # A repo-local `deny.toml` at the rust-workspace root overrides the org-wide
+      # config, letting a repo own its advisory/ban policy; otherwise fetch the org one.
+      - name: Resolve cargo-deny config
         env:
           DENY_CONFIG_URL: ${{ inputs.deny-config }}
+          REPO_DENY_CONFIG: ${{ inputs.rust-workspace }}/deny.toml
           DENY_CONFIG_PATH: ${{ inputs.rust-workspace }}/.ci-deny.toml
-        run: curl -fsSL "$DENY_CONFIG_URL" -o "$DENY_CONFIG_PATH"
+        run: |
+          set -euo pipefail
+          if [[ -f "$REPO_DENY_CONFIG" ]]; then
+            echo "Using repo-local deny.toml: $REPO_DENY_CONFIG"
+            cp "$REPO_DENY_CONFIG" "$DENY_CONFIG_PATH"
+          else
+            echo "Fetching org cargo-deny config: $DENY_CONFIG_URL"
+            curl -fsSL "$DENY_CONFIG_URL" -o "$DENY_CONFIG_PATH"
+          fi
 
       - uses: EmbarkStudios/cargo-deny-action@5bb39ff5d5a0e94dc9e2dc94eced0c6129743a57 # v2
         with:
@@ -452,38 +481,34 @@ jobs:
                           print name, $0
                         }' Cargo.lock)
 
-      - name: Clone solana-lints
+      - name: Clone dylint lints
         env:
+          REPO: ${{ inputs.solana-lints-repo }}
           REF: ${{ inputs.solana-lints-ref }}
         run: |
           set -euo pipefail
-          git clone https://github.com/crytic/solana-lints.git /tmp/solana-lints
-          git -C /tmp/solana-lints checkout "$REF"
+          git clone "$REPO" /tmp/dylint-lints
+          git -C /tmp/dylint-lints checkout "$REF"
 
       - name: Cache built lint libraries
         id: lints-cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: /tmp/solana-lints/target/release
-          key: solana-lints-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ inputs.solana-lints-ref }}
+          path: /tmp/dylint-lints/target/release
+          key: dylint-lints-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ inputs.solana-lints-ref }}
 
-      # solana-lints' root [workspace] only contains `crate`, not `lints/*`,
-      # so each lint must be built independently. CARGO_TARGET_DIR pools
-      # them into one target dir so DYLINT_LIBRARY_PATH below resolves.
+      # otter-sec/anchor-lints is a single Cargo workspace (members =
+      # ["anchor-lints-utils", "lints/*"]), so one workspace build compiles
+      # every lint cdylib into target/release. (The legacy crytic/trailofbits
+      # solana-lints was not a workspace and needed a per-lint build loop.)
       - name: Build lints
         if: steps.lints-cache.outputs.cache-hit != 'true'
-        working-directory: /tmp/solana-lints
-        env:
-          CARGO_TARGET_DIR: /tmp/solana-lints/target
-        run: |
-          set -euo pipefail
-          for lint in lints/*/; do
-            (cd "$lint" && cargo build --release)
-          done
+        working-directory: /tmp/dylint-lints
+        run: cargo build --release
 
       - name: Run dylint
         env:
-          DYLINT_LIBRARY_PATH: /tmp/solana-lints/target/release
+          DYLINT_LIBRARY_PATH: /tmp/dylint-lints/target/release
           # RUSTUP_TOOLCHAIN beats a workspace rust-toolchain[.toml] pin in
           # rustup's resolution order. The lint .so files and dylint driver
           # are both built against `solana-lints-toolchain`; cargo running
