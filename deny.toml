@@ -90,6 +90,9 @@ allow = [
   "Unicode-3.0",
   # webpki-roots ships the Mozilla CA bundle.
   "CDLA-Permissive-2.0",
+  # bzip2 — permissive BSD-style, no source-disclosure obligation. Pulled via
+  # libbz2-rs-sys, the default backend of bzip2 0.6 (agave-snapshots 4.x).
+  "bzip2-1.0.6",
 ]
 confidence-threshold = 0.93
 exceptions = []
