@@ -1,0 +1,129 @@
+name: Verifiable Build (reusable)
+
+permissions:
+  contents: read
+
+# Reproducible BPF build of every Anchor program in the workspace, via
+# Ellipsis Labs's solana-verifiable-build Docker image. Emits a sha256
+# bytecode hash table to the run summary and uploads target/deploy/*.so.
+#
+# Deliberately NOT part of static-analysis.yml. That workflow is attached to
+# repos through an org ruleset, and rulesets only ever trigger a required
+# workflow on `pull_request` / `merge_group` — so a build gated on "push to
+# the default branch" or `workflow_dispatch` could never fire through that
+# path. Releases and manual builds need their own entry point, which means a
+# thin wrapper committed in the consumer repo:
+#
+#   name: Verifiable Build
+#   on:
+#     push:
+#       branches: [main]
+#     workflow_dispatch:
+#   permissions:
+#     contents: read
+#   jobs:
+#     verifiable-build:
+#       uses: marinade-finance/.github/.github/workflows/verifiable-build.yml@main
+#
+# The wrapper's `on:` block is the whole gate — this workflow runs whenever
+# it is called, with no internal event checks.
+on:
+  workflow_call:
+    inputs:
+      anchor-workspace:
+        description: "Path to the Anchor workspace root (must contain Anchor.toml). Defaults to the repository root."
+        required: false
+        default: "."
+        type: string
+      solana-verify-version:
+        description: "solana-verify CLI version (Ellipsis Labs/solana-verifiable-build) to install. Pinned so hashes stay reproducible across runs — bumping it can change the bytecode hash, so treat that as a deliberate change."
+        required: false
+        default: "0.4.15"
+        type: string
+      artifact-retention-days:
+        description: "Retention period for the uploaded target/deploy/*.so artifact."
+        required: false
+        default: 90
+        type: number
+
+jobs:
+  verifiable-build:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: ${{ inputs.anchor-workspace }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      # Checked from the repo root so a bad anchor-workspace produces this
+      # message rather than a confusing "cd: no such directory" from the
+      # first step that inherits the working-directory default.
+      - name: Verify Anchor workspace
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          ANCHOR_WORKSPACE: ${{ inputs.anchor-workspace }}
+        run: |
+          set -euo pipefail
+          if [[ ! -d "$ANCHOR_WORKSPACE" ]]; then
+            echo "::error::anchor-workspace '$ANCHOR_WORKSPACE' does not exist"
+            exit 1
+          fi
+          if [[ ! -f "$ANCHOR_WORKSPACE/Anchor.toml" ]]; then
+            echo "::error::Anchor.toml not found at '$ANCHOR_WORKSPACE/Anchor.toml' — this workflow only builds Anchor workspaces"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: stable
+
+      - name: Cache solana-verify binary
+        id: cache-solana-verify
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cargo/bin/solana-verify
+          key: solana-verify-${{ runner.os }}-${{ inputs.solana-verify-version }}
+
+      # Installed from the repo root: `cargo install` inside the Anchor
+      # workspace would pick up its .cargo/config.toml and rust-toolchain pin.
+      - name: Install solana-verify
+        if: steps.cache-solana-verify.outputs.cache-hit != 'true'
+        working-directory: ${{ github.workspace }}
+        run: cargo install --locked solana-verify --version ${{ inputs.solana-verify-version }}
+
+      - name: Verifiable build
+        run: solana-verify build
+
+      - name: Compute executable hashes
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          binaries=(target/deploy/*.so)
+          if [[ ${#binaries[@]} -eq 0 ]]; then
+            echo "::error::solana-verify build produced no .so files in target/deploy"
+            exit 1
+          fi
+          {
+            echo "## Verifiable build"
+            echo ""
+            echo "solana-verify \`${{ inputs.solana-verify-version }}\`"
+            echo ""
+            echo "| Program | sha256 |"
+            echo "| --- | --- |"
+            for so in "${binaries[@]}"; do
+              name=$(basename "$so" .so)
+              hash=$(solana-verify get-executable-hash "$so")
+              echo "| \`$name\` | \`$hash\` |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload program binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verifiable-build-${{ github.sha }}
+          path: ${{ inputs.anchor-workspace }}/target/deploy/*.so
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact-retention-days }}

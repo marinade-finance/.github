@@ -12,12 +12,7 @@ on:
         default: "auto"
         type: string
       run-solana:
-        description: "Run Sec3 X-Ray + solana-lints: 'auto' | 'true' | 'false'. Does not control verifiable-build — see run-verifiable-build."
-        required: false
-        default: "auto"
-        type: string
-      run-verifiable-build:
-        description: "Run verifiable-build: 'auto' | 'true' | 'false'. In 'auto' mode the job runs only on push to the default branch and on workflow_dispatch, and only when Anchor.toml is present. 'true' forces the job on any event (still requires Anchor.toml). 'false' always skips. Decoupled from run-solana so a caller can ask for just verifiable-build without running sec3-xray / solana-lints."
+        description: "Run Sec3 X-Ray + solana-lints: 'auto' | 'true' | 'false'"
         required: false
         default: "auto"
         type: string
@@ -90,11 +85,6 @@ on:
         # to `.../main/deny.toml` before merging this PR.
         default: "https://raw.githubusercontent.com/marinade-finance/.github/claude/static-analysis-required-wrapper/deny.toml"
         type: string
-      solana-verify-version:
-        description: "solana-verify CLI version (Ellipsis Labs/solana-verifiable-build) to install for the verifiable-build job."
-        required: false
-        default: "0.4.15"
-        type: string
 
 jobs:
   detect:
@@ -102,9 +92,6 @@ jobs:
     outputs:
       has-rust: ${{ steps.check.outputs.has-rust }}
       has-anchor: ${{ steps.check.outputs.has-anchor }}
-      # File-existence-only signal for Anchor.toml; independent of run-solana
-      # so callers with run-solana=false can still run verifiable-build.
-      anchor-present: ${{ steps.check.outputs.anchor-present }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -115,7 +102,6 @@ jobs:
         env:
           RUN_RUST: ${{ inputs.run-rust }}
           RUN_SOLANA: ${{ inputs.run-solana }}
-          RUN_VERIFIABLE_BUILD: ${{ inputs.run-verifiable-build }}
           RUST_WORKSPACE: ${{ inputs.rust-workspace }}
           ANCHOR_WORKSPACE_INPUT: ${{ inputs.anchor-workspace }}
           ANCHOR_WORKSPACE: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
@@ -128,9 +114,8 @@ jobs:
           fi
 
           # Fail fast on missing Anchor.toml when a flag explicitly requires it.
-          if { [[ "$RUN_SOLANA" != "false" ]] && \
-               [[ -n "$ANCHOR_WORKSPACE_INPUT" || "$RUN_SOLANA" == "true" ]]; } || \
-             [[ "$RUN_VERIFIABLE_BUILD" == "true" ]]; then
+          if [[ "$RUN_SOLANA" != "false" ]] && \
+             [[ -n "$ANCHOR_WORKSPACE_INPUT" || "$RUN_SOLANA" == "true" ]]; then
             if [[ ! -d "$ANCHOR_WORKSPACE" ]]; then
               echo "::error::anchor-workspace '$ANCHOR_WORKSPACE' does not exist"
               exit 1
@@ -171,12 +156,11 @@ jobs:
 
           echo "has-rust=$HAS_RUST" >> "$GITHUB_OUTPUT"
           echo "has-anchor=$HAS_ANCHOR" >> "$GITHUB_OUTPUT"
-          echo "anchor-present=$ANCHOR_PRESENT" >> "$GITHUB_OUTPUT"
 
           {
             echo "## Detection results"
             echo "- Rust workspace: \`$RUST_WORKSPACE\` → has-rust=\`$HAS_RUST\`"
-            echo "- Anchor workspace: \`$ANCHOR_WORKSPACE\` → has-anchor=\`$HAS_ANCHOR\` (anchor-present=\`$ANCHOR_PRESENT\`)"
+            echo "- Anchor workspace: \`$ANCHOR_WORKSPACE\` → has-anchor=\`$HAS_ANCHOR\` (Anchor.toml present: \`$ANCHOR_PRESENT\`)"
           } >> "$GITHUB_STEP_SUMMARY"
 
   clippy:
@@ -515,76 +499,3 @@ jobs:
           # any other rustc would fail to load them.
           RUSTUP_TOOLCHAIN: ${{ inputs.solana-lints-toolchain }}
         run: cargo dylint --all -- --all-targets
-
-  verifiable-build:
-    needs: detect
-    # Gated on `anchor-present` (file existence), not `has-anchor` (which
-    # is overridden by run-solana), so a caller can ask for verifiable-build
-    # alone without sec3-xray / solana-lints.
-    if: >-
-      needs.detect.outputs.anchor-present == 'true' && (
-        inputs.run-verifiable-build == 'true' ||
-        (inputs.run-verifiable-build == 'auto' && (
-          (github.event_name == 'push' &&
-           github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
-          || github.event_name == 'workflow_dispatch'
-        ))
-      )
-    runs-on: ubuntu-24.04
-    defaults:
-      run:
-        working-directory: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          persist-credentials: false
-
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
-        with:
-          toolchain: stable
-
-      - name: Cache solana-verify binary
-        id: cache-solana-verify
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ~/.cargo/bin/solana-verify
-          key: solana-verify-${{ runner.os }}-${{ inputs.solana-verify-version }}
-
-      - name: Install solana-verify
-        if: steps.cache-solana-verify.outputs.cache-hit != 'true'
-        working-directory: ${{ github.workspace }}
-        run: cargo install --locked solana-verify --version ${{ inputs.solana-verify-version }}
-
-      - name: Verifiable build
-        run: solana-verify build
-
-      - name: Compute executable hashes
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          binaries=(target/deploy/*.so)
-          if [[ ${#binaries[@]} -eq 0 ]]; then
-            echo "::error::solana-verify build produced no .so files in target/deploy"
-            exit 1
-          fi
-          {
-            echo "## Verifiable build"
-            echo ""
-            echo "solana-verify \`${{ inputs.solana-verify-version }}\`"
-            echo ""
-            echo "| Program | sha256 |"
-            echo "| --- | --- |"
-            for so in "${binaries[@]}"; do
-              name=$(basename "$so" .so)
-              hash=$(solana-verify get-executable-hash "$so")
-              echo "| \`$name\` | \`$hash\` |"
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload program binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: verifiable-build-${{ github.sha }}
-          path: ${{ inputs.anchor-workspace || inputs.rust-workspace }}/target/deploy/*.so
-          if-no-files-found: error
-          retention-days: 90
