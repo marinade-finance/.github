@@ -1,16 +1,46 @@
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-yanked = "deny"
-# All ignored advisories are unfixable transitive dependencies pulled in
-# through the Solana / Anchor / SPL ecosystem (solana-sdk, solana-zk-sdk,
-# spl-token-2022, anchor-lang, …). Revisit when the upstream Solana crates
-# upgrade past these.
+# Yanked crates are a lockfile-freshness signal, not a vulnerability signal.
+# Every yanked hit across the org (35 distinct crate versions: solana-program
+# 1.15.2, the spl-* 0.1/0.2/0.5 series, ahash, bytemuck, crossbeam-channel,
+# futures-util, cpufeatures, …) is a transitive Solana/SPL/Anchor pin yanked for
+# reasons unrelated to security, and none of them has a semver-compatible
+# replacement reachable from the versions the ecosystem pins. Yanks that *were*
+# motivated by a security problem land in the advisory DB, and those are still
+# `deny` below — so downgrading this to `warn` does not create a hole.
+yanked = "warn"
+# Only fail on unmaintained crates we can actually act on: those reachable as
+# direct dependencies of a workspace member. Unmaintained crates buried deep in
+# the Solana validator / Anchor / SPL stack are unactionable in the consuming
+# repo, and they were the entire bulk of the ignore list below.
+unmaintained = "workspace"
+# Every entry below is an advisory with no patched release reachable from the
+# version the Solana / Anchor / SPL ecosystem pins. Anything with a
+# semver-compatible fix (a plain `cargo update -p <crate>` away) is deliberately
+# NOT here — those must be fixed in the consuming repo, not suppressed here.
 ignore = [
+  # -- ed25519 / curve25519 -------------------------------------------------
   # ed25519-dalek <2.0 — public-key oracle attack. solana-sdk pins 1.x.
   "RUSTSEC-2022-0093",
   # curve25519-dalek timing variability in Scalar*::sub. Solana-internal.
   "RUSTSEC-2024-0344",
+
+  # -- borsh ---------------------------------------------------------------
+  # borsh 0.9.x — parsing messages containing a non-Copy zero-sized type is
+  # unsound. Patched in 0.10.4 / 1.0, but anchor-lang <= 0.27 and
+  # solana-program 1.x pin borsh 0.9 and the bump is semver-major for them.
+  # Only reachable if a program deserializes a hand-written non-Copy ZST;
+  # none of the Marinade programs do. Drop this once every repo is on
+  # anchor-lang >= 0.29 / solana-program >= 1.17 (which use borsh 0.10/1.x).
+  "RUSTSEC-2023-0033",
+
+  # -- unmaintained transitive crates ---------------------------------------
+  # Belt-and-braces: `unmaintained = "workspace"` above already stops these
+  # from failing, because none of them is a direct dependency of any Marinade
+  # workspace member. They are kept as documentation of *why* they are
+  # acceptable, so that a future switch back to `unmaintained = "all"` does not
+  # silently re-break every repo.
   # atty unmaintained. Pulled by solana-logger via env_logger 0.9.
   "RUSTSEC-2024-0375",
   # derivative unmaintained. Pulled via ark-ff / ark-ec.
@@ -25,24 +55,6 @@ ignore = [
   "RUSTSEC-2025-0161",
   # rand unsoundness with custom logger. Pulled via solana-sdk / spl-pod.
   "RUSTSEC-2026-0097",
-  # rustls-webpki 0.101.x (EOL) cert-validation bugs: URI/wildcard name
-  # constraints and a reachable CRL-parsing panic. Fixed in the 0.102/0.103
-  # lines but the 0.101 line is end-of-life. Pulled via the old rustls 0.21
-  # / tokio-tungstenite 0.20 stack that solana-pubsub-client still pins.
-  # Drop these once the Solana websocket client upgrades tungstenite/rustls.
-  "RUSTSEC-2026-0098",
-  "RUSTSEC-2026-0099",
-  "RUSTSEC-2026-0104",
-  # rustls-webpki <0.103.10 CRL distribution-point matching bug. The 0.103
-  # line is patched (repos pick up 0.103.13 via `cargo update`); the stuck
-  # 0.102.x is pulled via gcp-bigquery-client -> yup-oauth2 -> rustls 0.22.
-  # Revisit when gcp-bigquery-client moves to a rustls 0.23 release.
-  "RUSTSEC-2026-0049",
-  # Unmaintained crates pinned deep in the Solana validator stack
-  # (solana-runtime / solana-ledger / solana-storage-bigtable), reached via
-  # the snapshot-parser git dep, plus the reqwest 0.11 / gcp-bigquery-client
-  # TLS stack. No maintained drop-in at the versions those crates pin; revisit
-  # when the upstream Solana / reqwest crates move forward.
   # instant — unmaintained. Pulled via backoff -> solana-storage-bigtable.
   "RUSTSEC-2024-0384",
   # backoff — unmaintained. Pulled via solana-storage-bigtable.
@@ -59,6 +71,67 @@ ignore = [
   # utoipa-gen < 4). Repos on utoipa >= 4 don't pull it; bumping utoipa past
   # 3.x is the real fix where the OpenAPI migration is worth it.
   "RUSTSEC-2024-0370",
+
+  # -- rustls / webpki EOL lines -------------------------------------------
+  # rustls-webpki 0.101.x (EOL) cert-validation bugs: URI/wildcard name
+  # constraints and a reachable CRL-parsing panic. Fixed in the 0.102/0.103
+  # lines but the 0.101 line is end-of-life. Pulled via the old rustls 0.21
+  # / tokio-tungstenite 0.20 stack that solana-pubsub-client still pins.
+  # Drop these once the Solana websocket client upgrades tungstenite/rustls.
+  "RUSTSEC-2026-0098",
+  "RUSTSEC-2026-0099",
+  "RUSTSEC-2026-0104",
+  # rustls-webpki <0.103.10 CRL distribution-point matching bug. The 0.103
+  # line is patched (repos pick up 0.103.13 via `cargo update`); the stuck
+  # 0.102.x is pulled via gcp-bigquery-client -> yup-oauth2 -> rustls 0.22.
+  # Revisit when gcp-bigquery-client moves to a rustls 0.23 release.
+  "RUSTSEC-2026-0049",
+
+  # -- ring 0.16 (EOL) ------------------------------------------------------
+  # ring — some AES functions panic when overflow checking is enabled.
+  # Patched in 0.17.12, but the 0.16 line is end-of-life and gets no fix.
+  # ring 0.16.20 is pinned by rustls 0.20 / webpki 0.22, which the Solana
+  # <= 1.18 client stack (solana-client, solana-quic-client) still requires.
+  # Only reachable in a debug/overflow-checks build, and only as a panic.
+  # Drop this once every repo is on a Solana release that uses rustls >= 0.21
+  # (and therefore ring 0.17).
+  "RUSTSEC-2025-0009",
+
+  # -- quinn-proto (QUIC transport, pinned by solana-quic-client) -----------
+  # Three DoS/resource-exhaustion advisories in the QUIC transport. Patched in
+  # the 0.11 line (0.10.5 / 0.11.14 / 0.11.15) but the 0.8 and 0.10 lines that
+  # solana-quic-client 1.x / 1.18 pin get no patched release, and moving quinn
+  # is semver-major for them. Marinade only uses QUIC as a *client* sending
+  # transactions to validators, so the server-side exhaustion paths are not
+  # exposed. Repos already on quinn-proto 0.11.x should still
+  # `cargo update -p quinn-proto` to 0.11.15 — cargo-deny cannot scope an
+  # advisory ignore by version, so this entry is unavoidably broader than the
+  # 0.8/0.10 lines it exists for. Drop it once no repo resolves quinn-proto
+  # below 0.11.15.
+  "RUSTSEC-2023-0063",
+  "RUSTSEC-2026-0037",
+  "RUSTSEC-2026-0185",
+
+  # -- TEMPORARY: unmaintained *direct* dependencies -----------------------
+  # These are direct dependencies of workspace members, so `unmaintained =
+  # "workspace"` correctly surfaces them. None has a patched release — the fix
+  # is a migration in the owning repo. Each entry names the repos it unblocks
+  # and the change that retires it. Delete the entry when that change lands.
+  #
+  # structopt is in maintenance mode (a deprecation notice, not a
+  # vulnerability): it points users at clap >= 3, whose derive API absorbed
+  # structopt. Repos: delegation-strategy-2, native-staking, marinade-cli,
+  # tx-svc. Retire by migrating those repos to `clap` 4 with the `derive`
+  # feature.
+  "RUSTSEC-2022-0104",
+  # dotenv is unmaintained; `dotenvy` is a maintained drop-in fork.
+  # Repos: unstake-split-service. Retire by swapping the dependency to
+  # `dotenvy` (identical API).
+  "RUSTSEC-2021-0141",
+  # opentelemetry-jaeger is unmaintained; the Jaeger agent protocol is
+  # deprecated in favour of OTLP. Repos: tx-svc. Retire by moving tx-svc's
+  # tracing exporter to `opentelemetry-otlp`.
+  "RUSTSEC-2025-0123",
 ]
 
 # Permissive-only allow list. Anything copyleft (GPL/LGPL/AGPL/EUPL/EPL),
@@ -88,38 +161,88 @@ allow = [
   "Zlib",
   # ICU / idna stack pulled in via reqwest -> url -> idna.
   "Unicode-3.0",
+  # unicode-ident <= 1.0.11 dual-licenses under
+  # "(MIT OR Apache-2.0) AND Unicode-DFS-2016". Unicode-DFS-2016 is
+  # OSI-approved, permissive, attribution-only — no source disclosure. Newer
+  # unicode-ident releases use Unicode-3.0 instead, so this only matters for
+  # locks still pinning the old proc-macro2/syn stack.
+  "Unicode-DFS-2016",
   # webpki-roots ships the Mozilla CA bundle.
   "CDLA-Permissive-2.0",
   # bzip2 — permissive BSD-style, no source-disclosure obligation. Pulled via
   # libbz2-rs-sys, the default backend of bzip2 0.6 (agave-snapshots 4.x).
   "bzip2-1.0.6",
+  # OpenSSL (the pre-3.0 dual OpenSSL/SSLeay license) — required only by the
+  # BoringSSL-derived assembly and C shims inside `ring` (see the clarify
+  # stanza below). Permissive BSD-style with an advertising/attribution
+  # clause; no source-disclosure obligation. Not to be used to justify any
+  # other crate.
+  "OpenSSL",
 ]
 confidence-threshold = 0.93
+# Deliberately empty. Two copyleft findings in the org are NOT excepted here,
+# because excepting them is a legal decision, not a CI-plumbing one:
+#  - array-bytes 1.4.1 declares GPL-3.0 and is pulled by solana-program 1.15.2
+#    -> anchor-lang 0.27 in directed-stake and liquid-staking-program. Fix by
+#    moving those programs off solana-program 1.15 (later releases dropped the
+#    dependency), or by [patch]ing array-bytes to a release under its later
+#    permissive licensing.
+#  - index_list 0.2.7 declares LGPL-2.1-or-later and is pulled by
+#    solana-runtime 1.10.34 -> solana-client 1.10.34 in marinade-cli. Fix by
+#    bumping that repo's Solana client stack.
+# Until one of those lands, the two repos legitimately fail the licenses check.
 exceptions = []
 # First-party workspace crates are routinely unpublished (`publish = false`)
 # and carry no `license` field — they're internal binaries, integration-test
 # crates, and not-yet-released SDKs. Skip the license check for those rather
 # than forcing every repo to stamp a license on internal crates just to make
 # the supply-chain license gate (which is about third-party deps) pass.
+#
+# NOTE: this only covers crates that actually declare `publish = false`. A
+# workspace member with neither `publish = false` nor a `license` field is
+# still reported as `unlicensed` (and its path dependencies as `wildcard`,
+# since allow-wildcard-paths below does not apply to publishable crates).
+# That is intentional: the one-line fix belongs in the owning repo, not here.
 private = { ignore = true }
 
-# Clarify the license for crates that don't declare one in the relevant
-# release's manifest but are licensed upstream. Each expression below is a
-# verified, permissive license:
-#  - mpl-token-metadata 5.x ships without a license field despite Metaplex
-#    publishing it under Apache-2.0. This is third-party, so clarifying here
-#    is the right long-term home.
-#  - TEMPORARY: the marinade-finance first-party crates below
-#    (solana-transaction-*, solana-snapshot-parser) have no `license` field in
-#    their own Cargo.toml. The real fix is to add `license = "Apache-2.0"` in
-#    those repos directly; remove these entries once that lands and the
-#    consuming repos re-pin. Tracked as a follow-up — see the open PRs.
+# Clarify the license for third-party crates that ship a LICENSE file but no
+# machine-readable `license` field in the relevant release's manifest. Each
+# expression below was read off the crate's own LICENSE text.
 [[licenses.clarify]]
+# mpl-token-metadata 5.x ships without a license field despite Metaplex
+# publishing it under Apache-2.0.
 crate = "mpl-token-metadata"
 expression = "Apache-2.0"
 license-files = []
 
-# TEMP (fix upstream, then delete): marinade-finance crates missing a license field.
+[[licenses.clarify]]
+# ring < 0.17.9 declares only `license-file = "LICENSE"`. That file states:
+# Brian Smith's new code is ISC-style; the BoringSSL-derived code inherits
+# OpenSSL licensing; third_party/fiat (compiled in) is MIT. ring >= 0.17.9
+# declares `license = "Apache-2.0 AND ISC"` itself, so scope this to the old
+# releases the Solana <= 1.18 client stack pins.
+crate = "ring:<0.17.9"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = []
+
+[[licenses.clarify]]
+# webpki 0.22.x declares only `license-file = "LICENSE"`; the text is the same
+# ISC-style grant as its rustls-webpki successor. Pulled via rustls 0.20/0.21.
+crate = "webpki"
+expression = "ISC"
+license-files = []
+
+[[licenses.clarify]]
+# rustls-webpki 0.100.x predates the `license = "ISC"` field that 0.101+
+# declares; same LICENSE text.
+crate = "rustls-webpki:<0.101"
+expression = "ISC"
+license-files = []
+
+# TEMP (fix upstream, then delete): marinade-finance crates missing a license
+# field in their own Cargo.toml. The real fix is `license = "Apache-2.0"` (or
+# `publish = false`) in the owning repo; remove these entries once that lands
+# and the consuming repos re-pin.
 [[licenses.clarify]]
 crate = "snapshot-parser"
 expression = "Apache-2.0"
@@ -151,7 +274,11 @@ wildcards = "deny"
 # Path dependencies between workspace members are conventionally declared
 # without a version (`foo = { path = "../foo" }`), which cargo-deny would
 # otherwise flag as a wildcard. Allow wildcards *only* for path deps; a
-# wildcard on a crates.io dependency is still denied.
+# wildcard on a crates.io dependency is still denied. Note that cargo-deny
+# only applies this to crates marked `publish = false` — crates.io forbids
+# path deps in published crates — so a publishable workspace member with a
+# path dep is still an error. Fix that in the owning repo by marking the
+# crate `publish = false`.
 allow-wildcard-paths = true
 deny = []
 skip = []
@@ -161,7 +288,20 @@ skip-tree = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# Canonical upstream repositories for crates that are not published to
+# crates.io at the version we need. Each is the authoritative source for the
+# crate it provides; nothing here is a fork or a mirror.
+allow-git = [
+  # jito-programs — jito-priority-fee-distribution / jito-tip-distribution are
+  # not on crates.io. Consumed at a pinned rev by delegation-strategy-2.
+  "https://github.com/jito-foundation/jito-programs",
+  # solana-program-library — spl-governance 4.x is not on crates.io.
+  # Consumed by vote-aggregator.
+  "https://github.com/solana-labs/solana-program-library",
+  # anchor — marinade-sdk pins anchor 0.25 from git (the crates.io release of
+  # that vintage lacks the fixes it needs).
+  "https://github.com/coral-xyz/anchor",
+]
 # First-party crates are routinely consumed as git dependencies pinned to a
 # tag/branch (e.g. solana-transaction-builder, solana-snapshot-parser) before
 # they're ever published to crates.io. Trust the whole marinade-finance org as
