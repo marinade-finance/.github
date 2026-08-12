@@ -46,6 +46,16 @@ on:
         required: false
         default: true
         type: boolean
+      clippy-features:
+        description: "Cargo feature selection for clippy: 'auto' | 'all' | 'default' | 'none' | a comma-separated feature list. 'auto' uses --all-features on plain Rust workspaces (maximum coverage) but *default* features on Anchor workspaces, whose feature sets are mutually exclusive by design — enabling `idl-build` together with `no-entrypoint` fails to compile (`error[E0425]: cannot find function __idl_dispatch`), and `no-entrypoint` also orphans imports that only the entrypoint uses. Set 'all' explicitly on an Anchor repo whose features really are additive."
+        required: false
+        default: "auto"
+        type: string
+      clippy-extra-args:
+        description: "Extra whitespace-separated rustc/clippy lint arguments appended after `--` (e.g. `-A clippy::too_many_arguments`, or another `--check-cfg` expression for a cfg the shared allowlist below doesn't cover yet). Escape hatch so a single odd repo never has to wait on a change to this workflow."
+        required: false
+        default: ""
+        type: string
       xray-version:
         description: "Sec3 X-Ray release tag to install"
         required: false
@@ -79,11 +89,13 @@ on:
       deny-config:
         description: "URL of the cargo-deny config to use. Pin to a tag/SHA for stable behavior across reusable-workflow versions."
         required: false
-        # TEMPORARY: pointed at this wrapper branch so pre-merge validation
-        # exercises the deny.toml that PR #6 introduces (matching the branch
-        # the `uses:` in static-analysis-required.yml is pinned to). Revert
-        # to `.../main/deny.toml` before merging this PR.
-        default: "https://raw.githubusercontent.com/marinade-finance/.github/claude/static-analysis-required-wrapper/deny.toml"
+        # TEMPORARY: pointed at this PR's branch so pre-merge validation
+        # exercises the deny.toml that this PR introduces (matching the branch
+        # the `uses:` in static-analysis-required.yml is pinned to).
+        # MUST BECOME `.../main/deny.toml` BEFORE MERGE — otherwise every
+        # consumer repo keeps fetching its cargo-deny policy from a feature
+        # branch that will be deleted.
+        default: "https://raw.githubusercontent.com/marinade-finance/.github/claude/github-reusable-workflows-mi4w82/deny.toml"
         type: string
 
 jobs:
@@ -92,6 +104,10 @@ jobs:
     outputs:
       has-rust: ${{ steps.check.outputs.has-rust }}
       has-anchor: ${{ steps.check.outputs.has-anchor }}
+      # Raw "is there an Anchor.toml?" answer, *not* gated on run-solana: the
+      # clippy job needs it to pick a feature set even when the Solana jobs
+      # are switched off (run-solana='false' forces has-anchor=false).
+      anchor-present: ${{ steps.check.outputs.anchor-present }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -156,6 +172,7 @@ jobs:
 
           echo "has-rust=$HAS_RUST" >> "$GITHUB_OUTPUT"
           echo "has-anchor=$HAS_ANCHOR" >> "$GITHUB_OUTPUT"
+          echo "anchor-present=$ANCHOR_PRESENT" >> "$GITHUB_OUTPUT"
 
           {
             echo "## Detection results"
@@ -237,13 +254,126 @@ jobs:
         with:
           workspaces: ${{ inputs.rust-workspace }}
 
-      - name: cargo clippy
+      # KEEP IN SYNC with the identically-named step in the solana-lints job.
+      # Same `run:` body, only the toolchain `env:` differs (solana-lints forces
+      # its dylint nightly; here we use whatever toolchain clippy will run on).
+      # It is duplicated rather than factored into a composite action because
+      # this repo's reusable workflows are consumed as a single file and adding
+      # a local `actions/` path is out of scope for this change.
+      #
+      # Solana repos often lock dependency versions that no longer compile on a
+      # modern rustc, even though they built fine on the rustc that produced the
+      # lockfile. Bump the known offenders to their patched, semver-compatible
+      # releases:
+      #   - ahash < 0.7.8 / < 0.8.7 probes the compiler at build time and
+      #     enables its `stdsimd` nightly feature on any nightly, but
+      #     `feature(stdsimd)` was removed in rustc 1.78 (E0635).
+      #   - wasm-bindgen < 0.2.88 is rejected outright by rustc >= 1.76
+      #     ("older versions of the `wasm-bindgen` crate are incompatible
+      #     with current versions of Rust"). Its -macro/-backend/-shared
+      #     companions are pinned with `=` requirements, so cargo bumps them
+      #     in lockstep automatically.
+      # This only mutates the CI checkout's Cargo.lock; the repo's committed
+      # lockfile is untouched. The trade-off is that clippy then lints a
+      # very-slightly-newer dep graph than the committed one — cargo-deny still
+      # sees the pristine lockfile, so supply-chain policy is unaffected.
+      - name: Patch nightly-incompatible deps in Cargo.lock
+        shell: bash
         run: |
-          if [[ "${{ inputs.clippy-deny-warnings }}" == "true" ]]; then
-            cargo clippy --all-targets --all-features -- -D warnings
-          else
-            cargo clippy --all-targets --all-features
+          set -euo pipefail
+          [[ -f Cargo.lock ]] || { echo "No Cargo.lock; skipping."; exit 0; }
+          bump() {
+            echo "$1 $2 cannot build on a modern rustc; updating to $3"
+            # Another package may pin the offender with an exact `=` requirement
+            # (e.g. solana-frozen-abi 1.17 requires ahash "=0.8.5"), in which
+            # case cargo cannot honour --precise and exits non-zero. Warn and
+            # carry on: a lockfile heuristic must never be the thing that fails
+            # the gate. If the pinned version genuinely cannot compile, the
+            # build below says so with a precise error instead.
+            cargo update --package "$1@$2" --precise "$3" || \
+              echo "::warning::could not bump $1 $2 to $3 (likely pinned by an exact '=' requirement); continuing with the locked version"
+          }
+          while read -r name version; do
+            case "$name" in
+              ahash)
+                case "$version" in
+                  0.7.[0-7]) bump "$name" "$version" 0.7.8 ;;
+                  0.8.[0-6]) bump "$name" "$version" 0.8.7 ;;
+                esac ;;
+              wasm-bindgen)
+                case "$version" in
+                  0.2.*)
+                    if (( ${version##*.} < 88 )); then
+                      bump "$name" "$version" 0.2.88
+                    fi ;;
+                esac ;;
+            esac
+          done < <(awk '/^name = "(ahash|wasm-bindgen)"$/ {
+                          name = $3; gsub(/"/, "", name)
+                          getline; gsub(/version = |"/, "")
+                          print name, $0
+                        }' Cargo.lock)
+
+      - name: cargo clippy
+        shell: bash
+        env:
+          DENY_WARNINGS: ${{ inputs.clippy-deny-warnings }}
+          FEATURE_SELECTION: ${{ inputs.clippy-features }}
+          EXTRA_ARGS: ${{ inputs.clippy-extra-args }}
+          ANCHOR_PRESENT: ${{ needs.detect.outputs.anchor-present }}
+        run: |
+          set -euo pipefail
+
+          # Feature selection. `--all-features` is the right default for a plain
+          # Rust service (it lints every cfg-gated branch), but it is actively
+          # wrong for an Anchor program: Anchor's features are switches, not
+          # additive capabilities, and turning them all on at once does not
+          # compile (`idl-build` + `no-entrypoint` → E0425 __idl_dispatch).
+          SELECTION="$FEATURE_SELECTION"
+          if [[ "$SELECTION" == "auto" ]]; then
+            if [[ "$ANCHOR_PRESENT" == "true" ]]; then SELECTION="default"; else SELECTION="all"; fi
+            echo "clippy-features=auto → '$SELECTION' (Anchor.toml present: ${ANCHOR_PRESENT:-false})"
           fi
+          FEATURE_ARGS=()
+          case "$SELECTION" in
+            all)     FEATURE_ARGS=(--all-features) ;;
+            default) FEATURE_ARGS=() ;;
+            none)    FEATURE_ARGS=(--no-default-features) ;;
+            *)       FEATURE_ARGS=(--features "$SELECTION") ;;
+          esac
+
+          # Anchor's proc macros and Solana's platform-tools reference cfgs that
+          # the *destination* crate never declares: `#[program]` expands to
+          # `cfg(feature = "custom-heap")` / `"custom-panic"` /
+          # `cfg(target_os = "solana")`, and `#[derive(Accounts)]` expands to
+          # `cfg(feature = "anchor-debug")`. Anchor < 0.30 and Solana < 2.x
+          # predate `cargo::rustc-check-cfg`, so rustc's `unexpected_cfgs` lint
+          # fires on every expansion site — under `-D warnings` that is 10+ hard
+          # errors on perfectly correct code, in every older-Anchor repo in the
+          # fleet. Declare the cfgs as expected instead of allowing the lint, so
+          # a genuinely misspelled `feature = "..."` is still caught.
+          #
+          # Other macro-generated diagnostics are deliberately NOT allowed here,
+          # because unlike the cfgs above they are not fleet-wide: e.g. an Anchor
+          # program whose manifest holds solana-program back to `~2.2` while
+          # solana-account-info resolves to 2.3 gets `-D deprecated` on the
+          # `AccountInfo::realloc` inside `#[program]`. Fix that in the repo
+          # (relax the solana-program requirement) or, if it must be deferred,
+          # pass `clippy-extra-args: "-A deprecated"` from that repo's caller.
+          LINT_ARGS=(
+            --check-cfg 'cfg(feature, values("anchor-debug","custom-heap","custom-panic","no-entrypoint","no-idl","no-log-ix-name","idl-build","cpi"))'
+            --check-cfg 'cfg(target_os, values("solana"))'
+          )
+          if [[ "$DENY_WARNINGS" == "true" ]]; then
+            LINT_ARGS+=(-D warnings)
+          fi
+          if [[ -n "$EXTRA_ARGS" ]]; then
+            read -r -a extra <<< "$EXTRA_ARGS"
+            LINT_ARGS+=("${extra[@]}")
+          fi
+
+          set -x
+          cargo clippy --all-targets "${FEATURE_ARGS[@]}" -- "${LINT_ARGS[@]}"
 
   cargo-deny:
     needs: detect
@@ -419,6 +549,10 @@ jobs:
         with:
           workspaces: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
 
+      # KEEP IN SYNC with the identically-named step in the clippy job (same
+      # `run:` body; only this copy's RUSTUP_TOOLCHAIN env differs, forcing the
+      # dylint nightly). See that step for the full rationale and trade-offs.
+      #
       # Solana repos often lock dependency versions that no longer compile on
       # a modern rustc, even though they build fine on the workspace's own
       # stable/pinned toolchain. The dylint run forces a recent nightly, so
@@ -441,8 +575,15 @@ jobs:
           set -euo pipefail
           [[ -f Cargo.lock ]] || { echo "No Cargo.lock; skipping."; exit 0; }
           bump() {
-            echo "$1 $2 cannot build on the dylint nightly; updating to $3"
-            cargo update --package "$1@$2" --precise "$3"
+            echo "$1 $2 cannot build on a modern rustc; updating to $3"
+            # Another package may pin the offender with an exact `=` requirement
+            # (e.g. solana-frozen-abi 1.17 requires ahash "=0.8.5"), in which
+            # case cargo cannot honour --precise and exits non-zero. Warn and
+            # carry on: a lockfile heuristic must never be the thing that fails
+            # the gate. If the pinned version genuinely cannot compile, the
+            # build below says so with a precise error instead.
+            cargo update --package "$1@$2" --precise "$3" || \
+              echo "::warning::could not bump $1 $2 to $3 (likely pinned by an exact '=' requirement); continuing with the locked version"
           }
           while read -r name version; do
             case "$name" in
