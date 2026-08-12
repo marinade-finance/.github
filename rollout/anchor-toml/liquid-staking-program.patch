@@ -1,0 +1,15 @@
+diff --git a/Anchor.toml b/Anchor.toml
+index 1f6fc0c..12b9a2e 100644
+--- a/Anchor.toml
++++ b/Anchor.toml
+@@ -5,6 +5,10 @@ solana_version = "1.14.29"
+ [features]
+ seeds = false
+ skip-lint = false
++
++[programs.mainnet]
++marinade_finance = "MarBmsSgKXdrN1egZf5sqe1TMai9K1rChYNDJgjq7aD"
++
+ [programs.localnet]
+ marinade_finance = "MarBmsSgKXdrN1egZf5sqe1TMai9K1rChYNDJgjq7aD"
+ 

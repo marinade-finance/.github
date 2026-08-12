@@ -1,0 +1,43 @@
+# Optional second caller stub — copy to `.github/workflows/verify-deployments.yml`.
+#
+# Companion to the verifiable-build stub, for scheduled DRIFT DETECTION: it
+# checks every cluster the repo declares in Anchor.toml, on a timer, so an
+# unannounced upgrade to a deployed program surfaces without anyone asking.
+#
+# Adopt this only after verifiable-build.yml is green in the repo. On a schedule
+# a mismatch means one of two things, and both are worth a look:
+#   * someone upgraded the program without merging the source, or
+#   * the default branch has moved ahead of what is deployed (the common case).
+# If the second is normal for your repo, point `ref` at a release tag or set
+# `fail-on-mismatch: false` and treat the summary table as a report.
+name: Verify deployments
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Monday 06:17 UTC. Off-the-hour on purpose: scheduled workflows
+    # queue behind everyone else's :00 cron.
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-deployments-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-deployments:
+    uses: marinade-finance/.github/.github/workflows/verify-deployments.yml@main
+    with:
+      anchor-workspace: "."
+
+      # Must match the value used in this repo's verifiable-build.yml caller, or
+      # the two workflows will build with different toolchains and report
+      # different hashes for the same ref.
+      # base-image: "solanafoundation/solana-verifiable-build:2.3.0"
+
+      # A scheduled run whose default branch is legitimately ahead of the
+      # deployment will report a mismatch every week. Set this false to keep the
+      # report without the red X.
+      fail-on-mismatch: true

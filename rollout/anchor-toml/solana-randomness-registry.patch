@@ -1,0 +1,14 @@
+diff --git a/Anchor.toml b/Anchor.toml
+index 669ee2b..4d9016b 100644
+--- a/Anchor.toml
++++ b/Anchor.toml
+@@ -2,6 +2,9 @@
+ resolution = true
+ skip-lint = false
+ 
++[programs.mainnet]
++randomness_registry = "rand4M2SB9tZmTz37p9yEhXC6LtWnBJhBRXkjX2YmNH"
++
+ [programs.localnet]
+ randomness_registry = "rand4M2SB9tZmTz37p9yEhXC6LtWnBJhBRXkjX2YmNH"
+ 

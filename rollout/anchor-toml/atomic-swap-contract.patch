@@ -1,0 +1,14 @@
+diff --git a/Anchor.toml b/Anchor.toml
+index 7c23147..23556e5 100644
+--- a/Anchor.toml
++++ b/Anchor.toml
+@@ -5,6 +5,9 @@ package_manager = "pnpm"
+ resolution = true
+ skip-lint = false
+ 
++[programs.mainnet]
++atomic_swap = "AtoMXWZvgxPLRzG2s1KsN9UKFREXD15j6PuP9aMXth5"
++
+ [programs.devnet]
+ atomic_swap = "AtoMXWZvgxPLRzG2s1KsN9UKFREXD15j6PuP9aMXth5"
+ 

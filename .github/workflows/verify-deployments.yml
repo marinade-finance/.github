@@ -3,6 +3,16 @@ name: Verify deployments (reusable)
 permissions:
   contents: read
 
+# Drift detection across every cluster a repo declares: builds the workspace
+# reproducibly, then compares each artifact's sha256 against the bytecode
+# deployed at each `[programs.<cluster>]` entry in Anchor.toml.
+#
+# Companion to verifiable-build.yml, which is the release-time entry point
+# (single cluster, uploads artifacts). This one is meant to run on a schedule.
+# Both resolve their build image the same way, so a repo pinned in one must be
+# pinned identically in the other or the two will report different hashes.
+#
+# Needs no secrets from callers; requires `contents: read` to remain granted.
 on:
   workflow_call:
     inputs:
@@ -16,26 +26,52 @@ on:
         required: false
         default: ""
         type: string
+      base-image:
+        description: >-
+          Full Docker image reference for the reproducible build, e.g.
+          "solanafoundation/solana-verifiable-build:2.3.0". Leave empty to derive it
+          from the `solana-program` version in Cargo.lock. Must match the value used
+          in verifiable-build.yml for the same repo, or the two workflows will
+          disagree about the hash.
+        required: false
+        default: ""
+        type: string
       solana-verify-version:
         description: "solana-verify CLI version to install"
         required: false
         default: "0.4.15"
         type: string
       mainnet-rpc-url:
-        description: "RPC URL or moniker for mainnet (Anchor.toml [programs.mainnet])"
+        description: "RPC URL for mainnet (Anchor.toml [programs.mainnet]). An explicit URL rather than a CLI moniker, so resolution never depends on a Solana CLI config file on the runner."
         required: false
-        default: "mainnet-beta"
+        default: "https://api.mainnet-beta.solana.com"
         type: string
       devnet-rpc-url:
-        description: "RPC URL or moniker for devnet"
+        description: "RPC URL for devnet"
         required: false
-        default: "devnet"
+        default: "https://api.devnet.solana.com"
         type: string
       testnet-rpc-url:
-        description: "RPC URL or moniker for testnet"
+        description: "RPC URL for testnet"
         required: false
-        default: "testnet"
+        default: "https://api.testnet.solana.com"
         type: string
+      require-programs-section:
+        description: >-
+          Fail when Anchor.toml declares no non-localnet `[programs.*]` entries.
+          Defaults true: a repo with nothing to verify previously reported success,
+          which made "verified" indistinguishable from "never checked".
+        required: false
+        default: true
+        type: boolean
+      fail-on-mismatch:
+        description: >-
+          Fail the job when a built hash differs from the deployed hash, when a
+          declared program produced no artifact, or when a deployed hash could not
+          be read. Set false only to observe drift without blocking.
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   verify:
@@ -64,6 +100,67 @@ jobs:
             echo "::error::Anchor.toml not found at '$ANCHOR_WORKSPACE/Anchor.toml'"
             exit 1
           fi
+          if [[ ! -f "$ANCHOR_WORKSPACE/Cargo.lock" ]]; then
+            echo "::error::Cargo.lock not found at '$ANCHOR_WORKSPACE/Cargo.lock' — a reproducible build requires a committed lockfile"
+            exit 1
+          fi
+
+      # solana-verify picks its build image from the solana-program version in
+      # Cargo.lock. Resolving it here and passing --base-image explicitly makes
+      # the choice visible, overridable per repo, and turns "no image published
+      # for this version" into a comprehensible error rather than an opaque
+      # `docker pull` 404 mid-build.
+      - name: Resolve build image
+        id: image
+        shell: bash
+        env:
+          BASE_IMAGE_INPUT: ${{ inputs.base-image }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$BASE_IMAGE_INPUT" ]]; then
+            image="$BASE_IMAGE_INPUT"
+            echo "Using pinned base image from the base-image input."
+          else
+            versions="$(python3 - <<'PY'
+          import tomllib
+          with open("Cargo.lock", "rb") as f:
+              lock = tomllib.load(f)
+          seen = sorted({p["version"] for p in lock.get("package", []) if p.get("name") == "solana-program"})
+          print("\n".join(seen))
+          PY
+          )"
+            count=$(printf '%s\n' "$versions" | grep -c . || true)
+            if [[ "$count" -eq 0 ]]; then
+              echo "::error::Cargo.lock pins no solana-program version, so no build image can be derived. Set the base-image input explicitly."
+              exit 1
+            fi
+            if [[ "$count" -gt 1 ]]; then
+              echo "::error::Cargo.lock pins multiple solana-program versions ($(printf '%s' "$versions" | tr '\n' ' ')); image selection is ambiguous. Set the base-image input explicitly."
+              exit 1
+            fi
+            image="solanafoundation/solana-verifiable-build:${versions}"
+            echo "Derived base image from Cargo.lock solana-program ${versions}."
+          fi
+          echo "base-image=$image" >> "$GITHUB_OUTPUT"
+          echo "Base image: $image"
+
+      # Manifest check first so "tag does not exist" (a repo-configuration
+      # problem) never gets reported as the same thing as a full disk or a
+      # registry blip (infrastructure).
+      - name: Pull build image
+        shell: bash
+        env:
+          BASE_IMAGE: ${{ steps.image.outputs.base-image }}
+        run: |
+          set -euo pipefail
+          if ! docker manifest inspect "$BASE_IMAGE" > /dev/null 2>&1; then
+            echo "::error::No such image tag: '$BASE_IMAGE'. No verifiable-build image is published for that solana-program version. Set the base-image input to a published tag, or realign Cargo.lock onto a solana-program version that has one."
+            exit 1
+          fi
+          if ! docker pull "$BASE_IMAGE"; then
+            echo "::error::Image '$BASE_IMAGE' exists in the registry but could not be pulled. This is an infrastructure failure (disk space, registry rate limit, or network), not a repo misconfiguration — retry the run."
+            exit 1
+          fi
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
@@ -82,13 +179,18 @@ jobs:
         run: cargo install --locked solana-verify --version ${{ inputs.solana-verify-version }}
 
       - name: Verifiable build
-        run: solana-verify build
+        env:
+          BASE_IMAGE: ${{ steps.image.outputs.base-image }}
+        run: solana-verify build --base-image "$BASE_IMAGE"
 
       - name: Compare against on-chain deployments
         env:
           MAINNET_URL: ${{ inputs.mainnet-rpc-url }}
           DEVNET_URL: ${{ inputs.devnet-rpc-url }}
           TESTNET_URL: ${{ inputs.testnet-rpc-url }}
+          BASE_IMAGE: ${{ steps.image.outputs.base-image }}
+          REQUIRE_PROGRAMS_SECTION: ${{ inputs.require-programs-section }}
+          FAIL_ON_MISMATCH: ${{ inputs.fail-on-mismatch }}
         shell: bash
         run: |
           set -euo pipefail
@@ -111,11 +213,30 @@ jobs:
           PY
           mapfile -t entries < "$ENTRIES_FILE"
 
-          if [[ ${#entries[@]} -eq 0 ]]; then
-            echo "::warning::Anchor.toml has no [programs.*] sections to verify"
-            echo "## Verify deployments" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Anchor.toml has no \`[programs.*]\` sections — nothing to verify." >> "$GITHUB_STEP_SUMMARY"
+          # Count only clusters that can actually be checked. `localnet` is
+          # always skipped, so a repo declaring localnet alone has nothing to
+          # verify — and previously exited 0, reporting a green "verified" that
+          # was really "never checked". That is the single most misleading
+          # outcome this workflow can produce, so it is now a failure by default.
+          checkable=0
+          for entry in "${entries[@]}"; do
+            IFS=$'\t' read -r cluster _name _pubkey <<< "$entry"
+            [[ "$cluster" == "localnet" ]] || checkable=$((checkable + 1))
+          done
+
+          if [[ $checkable -eq 0 ]]; then
+            {
+              echo "## Verify deployments"
+              echo ""
+              echo "Anchor.toml declares no verifiable \`[programs.*]\` entries (only \`localnet\`, or none at all) — **nothing was verified.**"
+              echo ""
+              echo "Add a \`[programs.mainnet]\` table naming the deployed program ID. See \`rollout/\` in marinade-finance/.github for the per-repo values."
+            } >> "$GITHUB_STEP_SUMMARY"
+            if [[ "$REQUIRE_PROGRAMS_SECTION" == "true" ]]; then
+              echo "::error::Anchor.toml has no non-localnet [programs.*] entries, so nothing could be verified. Add [programs.mainnet], or set require-programs-section: false to acknowledge that this repo is unverified."
+              exit 1
+            fi
+            echo "::warning::Nothing to verify; not failing because require-programs-section is false"
             exit 0
           fi
 
@@ -148,13 +269,20 @@ jobs:
           {
             echo "## Verify deployments"
             echo ""
-            echo "solana-verify \`${{ inputs.solana-verify-version }}\` — built at \`$(git rev-parse --short HEAD)\`"
+            echo "solana-verify \`${{ inputs.solana-verify-version }}\` — image \`${BASE_IMAGE}\` — built at \`$(git rev-parse --short HEAD)\`"
             echo ""
             echo "| Cluster | Program | Pubkey | Local | On-chain | Status |"
             echo "| --- | --- | --- | --- | --- | --- |"
           } >> "$GITHUB_STEP_SUMMARY"
 
+          # `unverified` counts every entry that could have been checked but
+          # wasn't confirmed: a real mismatch, a declared program with no
+          # artifact, or a hash the RPC would not give up. All three mean "this
+          # deployment is not known to match the source", which is what the job
+          # status has to reflect. localnet entries are excluded by design.
+          unverified=0
           mismatches=0
+          checked=0
           for entry in "${entries[@]}"; do
             IFS=$'\t' read -r cluster name pubkey <<< "$entry"
             local_hash="${LOCAL_HASH[$name]:-}"
@@ -166,20 +294,31 @@ jobs:
               status="⏭ skipped (localnet)"
               on_chain_short="—"
             elif [[ -z "$local_hash" ]]; then
-              status="⚠ no local build"
+              status="❌ no built artifact named \`$name.so\`"
               on_chain_short="—"
+              echo "::error::Anchor.toml [programs.$cluster] lists '$name' but the build produced no target/deploy/$name.so — check that the name matches the crate's [lib] name"
+              unverified=$((unverified + 1))
             else
-              if on_chain_hash=$(solana-verify get-program-hash "$pubkey" --url "$url" 2>/dev/null); then
+              # get-program-hash retries internally and then aborts the process;
+              # guarding with `if` keeps a failure from killing the summary, and
+              # `tail -n1` drops those retry notices from the captured output.
+              if on_chain_hash=$(solana-verify get-program-hash "$pubkey" --url "$url" 2>/dev/null | tail -n1) \
+                   && [[ -n "$on_chain_hash" ]]; then
+                checked=$((checked + 1))
                 on_chain_short="\`$(short "$on_chain_hash")\`"
                 if [[ "$local_hash" == "$on_chain_hash" ]]; then
                   status="✅ match"
                 else
                   status="❌ mismatch"
+                  echo "::error::$cluster/$name ($pubkey): built $local_hash but $on_chain_hash is deployed"
                   mismatches=$((mismatches + 1))
+                  unverified=$((unverified + 1))
                 fi
               else
-                status="⏸ not deployed / RPC error"
+                status="❌ could not read deployed bytecode"
                 on_chain_short="—"
+                echo "::error::Could not read deployed bytecode for $cluster/$name ($pubkey) from $url — the program may not be deployed, or the RPC call failed. Treating as unverified."
+                unverified=$((unverified + 1))
               fi
             fi
 
@@ -189,9 +328,16 @@ jobs:
 
           {
             echo ""
-            if [[ $mismatches -gt 0 ]]; then
-              echo "**$mismatches mismatch(es) detected** — the on-chain bytecode differs from a verifiable build of the current ref."
+            if [[ $unverified -gt 0 ]]; then
+              echo "**$unverified of $checkable declared deployment(s) unverified** ($mismatches outright mismatch(es)) — the on-chain bytecode was not shown to come from this ref."
             else
-              echo "All checked deployments match the verifiable build of the current ref."
+              echo "All $checked checked deployment(s) match the verifiable build of the current ref."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ $unverified -gt 0 ]]; then
+            if [[ "$FAIL_ON_MISMATCH" == "true" ]]; then
+              exit 1
+            fi
+            echo "::warning::$unverified deployment(s) unverified; not failing because fail-on-mismatch is false"
+          fi
