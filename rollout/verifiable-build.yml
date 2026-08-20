@@ -1,67 +1,24 @@
-# Caller stub — copy to `.github/workflows/verifiable-build.yml` in a program repo.
-#
-# This file is the ENTIRE per-repo footprint. All logic lives in the shared
-# reusable workflow; this wrapper only decides *when* it runs and passes the
-# repo's inputs. See rollout/README.md for the per-repo input values and for
-# which repos are ready to adopt.
+# Copy to `.github/workflows/verifiable-build.yml`. Per-repo input values are in
+# rollout/README.md — `library-name` is required for any multi-crate workspace.
 name: Verifiable Build
 
 on:
-  # Manual runs: the way to prove a deployment matches a given ref on demand,
-  # and the trigger to use for the first adoption run in each repo.
   workflow_dispatch:
-  # Release tags: the moment a hash becomes worth recording, because this is
-  # the ref that gets deployed.
   push:
     tags:
       - 'v*'
 
-# Granting `contents: read` is required. A called workflow can never hold more
-# permission than its caller, so tightening this to `{}` breaks the checkout
-# inside the shared workflow.
 permissions:
   contents: read
 
-# Concurrency belongs HERE, not in the shared workflow. GitHub evaluates a
-# called workflow's `concurrency` in the caller's context, so if both sides
-# declared the same group the inner job would queue behind this run's own slot
-# and hang until it timed out.
+# Concurrency belongs in the caller: a called workflow evaluates it in the
+# caller's context, so a shared group name deadlocks it against this run.
 concurrency:
   group: verifiable-build-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   verifiable-build:
-    # Pin to a tag or commit SHA instead of @main once this workflow has a
-    # release, so a change to the shared workflow cannot silently change a
-    # published bytecode hash.
     uses: marinade-finance/.github/.github/workflows/verifiable-build.yml@main
-    # NOTE: deliberately no `secrets: inherit`. This workflow reads only public
-    # Docker Hub images and a public Solana RPC endpoint, and `actions/checkout`
-    # uses the token GitHub injects into every called workflow. Passing secrets
-    # would widen the blast radius for no benefit.
     with:
-      # Every Marinade program repo keeps Anchor.toml at the repo root, so the
-      # default is correct and this line can be omitted.
-      anchor-workspace: '.'
-
-      # Usually left empty: the shared workflow derives the build image from the
-      # `solana-program` version pinned in Cargo.lock, which is what
-      # solana-verify does on its own. Set it explicitly when the derived image
-      # cannot build the repo — marinade-config needs 4.0.3 because its lockfile
-      # pulls edition-2024 crates that the 2.x/3.x images' Rust 1.84 cannot
-      # parse — or when the lockfile version has no published image at all.
-      # Per-repo values are in rollout/README.md; do not copy the example below
-      # without checking that table.
-      # base-image: "solanafoundation/solana-verifiable-build:4.0.3"
-
-      # REQUIRED for a workspace whose members are not all SBF-buildable: with
-      # it unset, solana-verify builds from the workspace root and cargo
-      # resolves every member, failing on the first non-program crate.
-      # library-name: "marinade_config"
-
-      # Compares the built hash against the bytecode deployed at the program ID
-      # in Anchor.toml's `[programs.mainnet]` table. The job FAILS if that table
-      # is missing, rather than reporting a green check that verified nothing —
-      # so apply the Anchor.toml patch before the first run.
-      verify-onchain: true
+      library-name: 'my_program'
