@@ -521,10 +521,11 @@ jobs:
           path: /tmp/dylint-lints/target/release
           key: dylint-lints-v2-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ steps.lints-checkout.outputs.sha }}
 
+      # --workspace, not a bare build: the lints repo's root is itself a package, so the default build target is that root crate and none of the lints/* cdylibs.
       - name: Build lints
         if: steps.lints-cache.outputs.cache-hit != 'true'
         working-directory: /tmp/dylint-lints
-        run: cargo build --release
+        run: cargo build --release --workspace
 
       # Without this, an empty or stale lint cache makes `cargo dylint --all` load zero lints and exit 0 — a green gate that checked nothing.
       - name: Verify lint libraries were built
