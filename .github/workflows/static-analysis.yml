@@ -514,12 +514,12 @@ jobs:
           git -C /tmp/dylint-lints checkout "$REF"
           echo "sha=$(git -C /tmp/dylint-lints rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Cache built lint libraries
+      - name: Restore built lint libraries
         id: lints-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/dylint-lints/target/release
-          key: dylint-lints-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ steps.lints-checkout.outputs.sha }}
+          key: dylint-lints-v2-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ steps.lints-checkout.outputs.sha }}
 
       - name: Build lints
         if: steps.lints-cache.outputs.cache-hit != 'true'
@@ -543,6 +543,14 @@ jobs:
           fi
           printf 'loaded %d lint library(ies):\n' "${#libs[@]}"
           printf '  %s\n' "${libs[@]##*/}"
+
+      # Saving after the check, not via actions/cache, is what keeps a failed build from caching an empty target dir that later runs restore into a zero-lint pass.
+      - name: Save built lint libraries
+        if: steps.lints-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/dylint-lints/target/release
+          key: dylint-lints-v2-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ steps.lints-checkout.outputs.sha }}
 
       - name: Run dylint
         env:
