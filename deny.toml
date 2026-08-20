@@ -72,3 +72,9 @@ allow-git = [
 # First-party crates are consumed as git dependencies pinned to a tag/branch before they are published; one org entry beats a list that grows with every internal crate. RETIRE when they are consumed by version.
 [sources.allow-org]
 github = ["marinade-finance"]
+
+[bans]
+# Not redundant now that private.ignore exempts unpublished crates from the
+# unlicensed check: a wildcard dep in one of those would otherwise go unflagged.
+wildcards = "deny"
+allow-wildcard-paths = true
