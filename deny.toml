@@ -72,6 +72,15 @@ ignore = [
   "RUSTSEC-2026-0098",
   "RUSTSEC-2026-0099",
   "RUSTSEC-2026-0104",
+
+  # curve25519-dalek 3.2.x and ed25519-dalek 1.0.1, reached through monolithic
+  # solana-sdk <=2.x, which pins solana-keypair below the versions that carry the
+  # fixes. 25 repos; no in-repo remedy exists.
+  # RETIRE: per repo, on moving off solana-sdk <=2.x to the granular solana-*
+  # crates. The four repos already free of both advisories have no solana-sdk
+  # dependency at all, which is what makes that the fix rather than a Solana bump.
+  "RUSTSEC-2024-0344",
+  "RUSTSEC-2022-0093",
 ]
 
 # Permissive-only allow list. Anything copyleft (GPL/LGPL/AGPL/EUPL/EPL),
