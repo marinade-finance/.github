@@ -89,7 +89,7 @@ on:
       deny-config:
         description: "URL of the cargo-deny config to use. Pin to a tag/SHA for stable behavior across reusable-workflow versions."
         required: false
-        default: "https://raw.githubusercontent.com/marinade-finance/.github/main/deny.toml"
+        default: "https://raw.githubusercontent.com/marinade-finance/.github/claude/static-analysis-required-wrapper/deny.toml"
         type: string
 
 jobs:
