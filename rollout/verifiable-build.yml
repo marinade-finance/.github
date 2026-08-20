@@ -45,11 +45,20 @@ jobs:
       # default is correct and this line can be omitted.
       anchor-workspace: "."
 
-      # Left empty on purpose: the shared workflow derives the build image from
-      # the `solana-program` version pinned in Cargo.lock, which is what
-      # solana-verify does on its own. Set it only for a repo whose lockfile
-      # version has no published image — see rollout/README.md.
-      # base-image: "solanafoundation/solana-verifiable-build:2.3.0"
+      # Usually left empty: the shared workflow derives the build image from the
+      # `solana-program` version pinned in Cargo.lock, which is what
+      # solana-verify does on its own. Set it explicitly when the derived image
+      # cannot build the repo — marinade-config needs 4.0.3 because its lockfile
+      # pulls edition-2024 crates that the 2.x/3.x images' Rust 1.84 cannot
+      # parse — or when the lockfile version has no published image at all.
+      # Per-repo values are in rollout/README.md; do not copy the example below
+      # without checking that table.
+      # base-image: "solanafoundation/solana-verifiable-build:4.0.3"
+
+      # REQUIRED for a workspace whose members are not all SBF-buildable: with
+      # it unset, solana-verify builds from the workspace root and cargo
+      # resolves every member, failing on the first non-program crate.
+      # library-name: "marinade_config"
 
       # Compares the built hash against the bytecode deployed at the program ID
       # in Anchor.toml's `[programs.mainnet]` table. The job FAILS if that table

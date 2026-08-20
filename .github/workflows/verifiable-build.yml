@@ -55,6 +55,18 @@ on:
         required: false
         default: "0.4.15"
         type: string
+      library-name:
+        description: >-
+          Crate whose .so to build, passed through as `solana-verify build
+          --library-name`. REQUIRED for a workspace whose members are not all
+          SBF-buildable: with it unset, solana-verify builds from the workspace
+          root, so cargo resolves every member (CLIs, clients, test harnesses)
+          and the build fails on the first one that is not a Solana program.
+          Leave empty only for a single-program repo. Use the crate's `[lib]
+          name`, which is also the .so stem.
+        required: false
+        default: ""
+        type: string
       verify-onchain:
         description: >-
           Compare each built artifact's sha256 against the bytecode deployed on
@@ -231,7 +243,17 @@ jobs:
       - name: Verifiable build
         env:
           BASE_IMAGE: ${{ steps.image.outputs.base-image }}
-        run: solana-verify build --base-image "$BASE_IMAGE"
+          LIBRARY_NAME: ${{ inputs.library-name }}
+        run: |
+          set -euo pipefail
+          # Quote-safe and empty-safe: an unset library-name must not become a
+          # stray empty argument, which solana-verify reads as a crate named "".
+          args=(--base-image "$BASE_IMAGE")
+          if [[ -n "$LIBRARY_NAME" ]]; then
+            args+=(--library-name "$LIBRARY_NAME")
+          fi
+          echo "solana-verify build ${args[*]}"
+          solana-verify build "${args[@]}"
 
       - name: Compute executable hashes
         id: hashes
