@@ -89,13 +89,7 @@ on:
       deny-config:
         description: "URL of the cargo-deny config to use. Pin to a tag/SHA for stable behavior across reusable-workflow versions."
         required: false
-        # TEMPORARY: pointed at this PR's branch so pre-merge validation
-        # exercises the deny.toml that this PR introduces (matching the branch
-        # the `uses:` in static-analysis-required.yml is pinned to).
-        # MUST BECOME `.../main/deny.toml` BEFORE MERGE — otherwise every
-        # consumer repo keeps fetching its cargo-deny policy from a feature
-        # branch that will be deleted.
-        default: "https://raw.githubusercontent.com/marinade-finance/.github/claude/github-reusable-workflows-mi4w82/deny.toml"
+        default: "https://raw.githubusercontent.com/marinade-finance/.github/main/deny.toml"
         type: string
 
 jobs:
