@@ -98,9 +98,6 @@ jobs:
     outputs:
       has-rust: ${{ steps.check.outputs.has-rust }}
       has-anchor: ${{ steps.check.outputs.has-anchor }}
-      # Raw "is there an Anchor.toml?" answer, *not* gated on run-solana: the
-      # clippy job needs it to pick a feature set even when the Solana jobs
-      # are switched off (run-solana='false' forces has-anchor=false).
       anchor-present: ${{ steps.check.outputs.anchor-present }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
@@ -123,7 +120,6 @@ jobs:
             exit 1
           fi
 
-          # Fail fast on missing Anchor.toml when a flag explicitly requires it.
           if [[ "$RUN_SOLANA" != "false" ]] && \
              [[ -n "$ANCHOR_WORKSPACE_INPUT" || "$RUN_SOLANA" == "true" ]]; then
             if [[ ! -d "$ANCHOR_WORKSPACE" ]]; then
@@ -191,13 +187,6 @@ jobs:
           toolchain: ${{ inputs.rust-toolchain }}
           components: clippy
 
-      # If the workspace pins its own toolchain via rust-toolchain[.toml],
-      # `cargo clippy` uses that pin — not the one dtolnay just installed.
-      # Pull the pinned toolchain name out of `rustup show active-toolchain`
-      # (which reads the toml without needing the toolchain to be installed
-      # yet), then install it explicitly with clippy. Using `--toolchain`
-      # avoids any "which toolchain is active right now?" ambiguity that
-      # bit the earlier `rustup component add clippy` approach.
       - name: Install clippy on workspace-pinned toolchain
         shell: bash
         run: |
@@ -215,12 +204,6 @@ jobs:
           rustup toolchain install "$ACTIVE" --component clippy --no-self-update
           rustup show
 
-      # Some workspaces transitively depend on clang-sys (via bindgen etc.).
-      # Its build script needs libclang + llvm-config at compile time, and
-      # the ubuntu-24.04 image doesn't ship libclang-dev by default — only
-      # the runtime .so under /usr/lib/llvm-*/lib, which clang-sys won't
-      # discover without llvm-config in PATH. Install on demand based on
-      # Cargo.lock so repos that don't pull clang-sys pay no extra time.
       - name: Install libclang for clang-sys (if used)
         shell: bash
         run: |
@@ -231,9 +214,6 @@ jobs:
             sudo apt-get install -y --no-install-recommends libclang-dev
           fi
 
-      # `cargo clippy --all-features` can pull `hidapi` (Solana hardware-wallet
-      # support behind a feature), whose build script resolves `libudev` via
-      # pkg-config — not on the runner by default. Install on demand by Cargo.lock.
       - name: Install libudev for hidapi (if used)
         shell: bash
         run: |
@@ -248,29 +228,7 @@ jobs:
         with:
           workspaces: ${{ inputs.rust-workspace }}
 
-      # KEEP IN SYNC with the identically-named step in the solana-lints job.
-      # Same `run:` body, only the toolchain `env:` differs (solana-lints forces
-      # its dylint nightly; here we use whatever toolchain clippy will run on).
-      # It is duplicated rather than factored into a composite action because
-      # this repo's reusable workflows are consumed as a single file and adding
-      # a local `actions/` path is out of scope for this change.
-      #
-      # Solana repos often lock dependency versions that no longer compile on a
-      # modern rustc, even though they built fine on the rustc that produced the
-      # lockfile. Bump the known offenders to their patched, semver-compatible
-      # releases:
-      #   - ahash < 0.7.8 / < 0.8.7 probes the compiler at build time and
-      #     enables its `stdsimd` nightly feature on any nightly, but
-      #     `feature(stdsimd)` was removed in rustc 1.78 (E0635).
-      #   - wasm-bindgen < 0.2.88 is rejected outright by rustc >= 1.76
-      #     ("older versions of the `wasm-bindgen` crate are incompatible
-      #     with current versions of Rust"). Its -macro/-backend/-shared
-      #     companions are pinned with `=` requirements, so cargo bumps them
-      #     in lockstep automatically.
-      # This only mutates the CI checkout's Cargo.lock; the repo's committed
-      # lockfile is untouched. The trade-off is that clippy then lints a
-      # very-slightly-newer dep graph than the committed one — cargo-deny still
-      # sees the pristine lockfile, so supply-chain policy is unaffected.
+      # KEEP IN SYNC with the identically-named step in the solana-lints job: same `run:` body, only `env:` differs.
       - name: Patch nightly-incompatible deps in Cargo.lock
         shell: bash
         run: |
@@ -278,12 +236,7 @@ jobs:
           [[ -f Cargo.lock ]] || { echo "No Cargo.lock; skipping."; exit 0; }
           bump() {
             echo "$1 $2 cannot build on a modern rustc; updating to $3"
-            # Another package may pin the offender with an exact `=` requirement
-            # (e.g. solana-frozen-abi 1.17 requires ahash "=0.8.5"), in which
-            # case cargo cannot honour --precise and exits non-zero. Warn and
-            # carry on: a lockfile heuristic must never be the thing that fails
-            # the gate. If the pinned version genuinely cannot compile, the
-            # build below says so with a precise error instead.
+            # --precise exits non-zero when another package `=`-pins the crate (solana-frozen-abi requires ahash "=0.8.5"); never fail the gate on it.
             cargo update --package "$1@$2" --precise "$3" || \
               echo "::warning::could not bump $1 $2 to $3 (likely pinned by an exact '=' requirement); continuing with the locked version"
           }
@@ -318,11 +271,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Feature selection. `--all-features` is the right default for a plain
-          # Rust service (it lints every cfg-gated branch), but it is actively
-          # wrong for an Anchor program: Anchor's features are switches, not
-          # additive capabilities, and turning them all on at once does not
-          # compile (`idl-build` + `no-entrypoint` → E0425 __idl_dispatch).
           SELECTION="$FEATURE_SELECTION"
           if [[ "$SELECTION" == "auto" ]]; then
             if [[ "$ANCHOR_PRESENT" == "true" ]]; then SELECTION="default"; else SELECTION="all"; fi
@@ -336,35 +284,9 @@ jobs:
             *)       FEATURE_ARGS=(--features "$SELECTION") ;;
           esac
 
-          # Anchor's proc macros and Solana's platform-tools reference cfgs that
-          # the *destination* crate never declares: `#[program]` expands to
-          # `cfg(feature = "custom-heap")` / `"custom-panic"` /
-          # `cfg(target_os = "solana")`, and `#[derive(Accounts)]` expands to
-          # `cfg(feature = "anchor-debug")`. Anchor < 0.30 and Solana < 2.x
-          # predate `cargo::rustc-check-cfg`, so rustc's `unexpected_cfgs` lint
-          # fires on every expansion site — under `-D warnings` that is 10+ hard
-          # errors on perfectly correct code, in every older-Anchor repo in the
-          # fleet. Declare the cfgs as expected instead of allowing the lint, so
-          # a genuinely misspelled `feature = "..."` is still caught.
-          #
-          # Other macro-generated diagnostics are deliberately NOT allowed here,
-          # because unlike the cfgs above they are not fleet-wide: e.g. an Anchor
-          # program whose `#[program]` expansion calls the deprecated
-          # `AccountInfo::realloc` gets `-D deprecated`. Fix that in the repo with
-          # a crate-level `#![allow(deprecated)]` (which is what marinade-config
-          # does, and which cannot change codegen or the bytecode hash), or pass
-          # `clippy-extra-args: '-A deprecated'` from that repo's caller.
           LINT_ARGS=()
 
-          # --check-cfg was nightly-only before rustc 1.80: passing it to an older
-          # toolchain kills cargo at its first --print=cfg probe with "the `-Z
-          # unstable-options` flag must also be passed", so NOTHING gets linted.
-          # Four repos still pin older toolchains (marinade-cli and
-          # solana-stake-status 1.75.0, validator-manager 1.69.0, tx-svc on a 2024
-          # nightly), and the workspace-pinned-toolchain step above exists
-          # precisely so clippy runs on them. Skipping the flags there is safe:
-          # the unexpected_cfgs lint did not exist before 1.80, so there is
-          # nothing to declare and nothing to suppress.
+          # --check-cfg is nightly-only before rustc 1.80, and four repos still pin 1.69/1.75 toolchains.
           rustc_mm=$(rustc -V | sed -E 's/^rustc ([0-9]+)\.([0-9]+).*/\1 \2/')
           read -r rustc_major rustc_minor <<< "$rustc_mm"
           if (( rustc_major > 1 || (rustc_major == 1 && rustc_minor >= 80) )); then
@@ -379,10 +301,7 @@ jobs:
             LINT_ARGS+=(-D warnings)
           fi
           if [[ -n "$EXTRA_ARGS" ]]; then
-            # mapfile, not `read -a`: `read` stops at the first newline, so a
-            # caller passing a YAML block scalar would silently lose all but its
-            # first line — and a lint they added to unblock their repo would not
-            # apply while clippy still failed on it.
+            # mapfile, not `read -a`: `read` stops at the first newline and would drop every later argument.
             mapfile -t extra < <(printf '%s' "$EXTRA_ARGS" | xargs -n1 printf '%s\n')
             LINT_ARGS+=("${extra[@]}")
           fi
@@ -399,13 +318,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # Write deny.toml inside the workspace, not ${{ runner.temp }}: the
-      # cargo-deny-action's docker container mounts /home/runner/work/_temp
-      # to /github/runner_temp, so an absolute host path doesn't exist
-      # inside the container and cargo-deny silently falls back to its
-      # default config.
-      # A repo-local `deny.toml` at the rust-workspace root overrides the org-wide
-      # config, letting a repo own its advisory/ban policy; otherwise fetch the org one.
+      # The config must land inside the workspace: the action's container cannot see a host path and silently falls back to its own defaults.
       - name: Resolve cargo-deny config
         env:
           DENY_CONFIG_URL: ${{ inputs.deny-config }}
@@ -479,8 +392,7 @@ jobs:
 
       - name: Verify tool installations
         working-directory: ${{ github.workspace }}
-        # Wrap `xray --help | head -20` so SIGPIPE from `head` doesn't fail
-        # the step under `pipefail`.
+        # Braces and `|| true` keep SIGPIPE from `head` out of `pipefail`.
         run: |
           set -euo pipefail
           if ! xray --version 2>&1; then
@@ -491,12 +403,7 @@ jobs:
       - name: Run X-Ray
         env:
           ANCHOR_PROGRAMS_PATH: ${{ inputs.anchor-programs-path || 'programs' }}
-        # X-Ray exits 0 even when sub-tools emit errors, so capture the log
-        # and fail on subprocess failures (`sh: <n>:`) and X-Ray's own fatal
-        # output (`Error:` / `ERROR:`). Do NOT match generic `: error: `
-        # MLIR/LLVM diagnostics — X-Ray's IR-lowering pass emits those on
-        # perfectly valid Anchor code (e.g. `'llvm.call' op calling function
-        # with void result must not produce values` on `&mut` references).
+        # X-Ray exits 0 on failure. Match only its own fatal lines: its IR-lowering pass emits `: error: ` diagnostics on valid Anchor code.
         run: |
           set -euo pipefail
           if [[ ! -d "$ANCHOR_PROGRAMS_PATH" ]]; then
@@ -528,11 +435,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # Install stable BEFORE nightly. dtolnay/rust-toolchain makes the
-      # most-recently-installed toolchain the rustup default, and we want
-      # nightly to win for the dylint run. Installing stable first also
-      # ensures taiki-e's cargo-install fallback for cargo-dylint /
-      # dylint-link builds against stable, not the pinned nightly.
+      # Stable before nightly: dtolnay makes the last-installed toolchain the rustup default, and dylint needs the nightly to win.
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
           toolchain: stable
@@ -547,9 +450,6 @@ jobs:
           toolchain: ${{ inputs.solana-lints-toolchain }}
           components: rustc-dev, llvm-tools-preview
 
-      # See identical step in clippy job; cargo dylint compiles the
-      # workspace via `cargo check`, so any clang-sys build script in the
-      # dep tree triggers the same libclang lookup.
       - name: Install libclang for clang-sys (if used)
         shell: bash
         run: |
@@ -564,24 +464,7 @@ jobs:
         with:
           workspaces: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
 
-      # KEEP IN SYNC with the identically-named step in the clippy job (same
-      # `run:` body; only this copy's RUSTUP_TOOLCHAIN env differs, forcing the
-      # dylint nightly). See that step for the full rationale and trade-offs.
-      #
-      # Solana repos often lock dependency versions that no longer compile on
-      # a modern rustc, even though they build fine on the workspace's own
-      # stable/pinned toolchain. The dylint run forces a recent nightly, so
-      # bump the known offenders to their patched semver-compatible releases:
-      #   - ahash < 0.7.8 / < 0.8.7 probes the compiler at build time and
-      #     enables its `stdsimd` nightly feature on any nightly, but
-      #     `feature(stdsimd)` was removed in rustc 1.78 (E0635).
-      #   - wasm-bindgen < 0.2.88 is rejected outright by rustc >= 1.76
-      #     ("older versions of the `wasm-bindgen` crate are incompatible
-      #     with current versions of Rust"). Its -macro/-backend/-shared
-      #     companions are pinned with `=` requirements, so cargo bumps them
-      #     in lockstep automatically.
-      # This only mutates the CI checkout's Cargo.lock; the repo's committed
-      # lockfile is untouched.
+      # KEEP IN SYNC with the identically-named step in the clippy job: same `run:` body, only `env:` differs.
       - name: Patch nightly-incompatible deps in Cargo.lock
         shell: bash
         env:
@@ -591,12 +474,7 @@ jobs:
           [[ -f Cargo.lock ]] || { echo "No Cargo.lock; skipping."; exit 0; }
           bump() {
             echo "$1 $2 cannot build on a modern rustc; updating to $3"
-            # Another package may pin the offender with an exact `=` requirement
-            # (e.g. solana-frozen-abi 1.17 requires ahash "=0.8.5"), in which
-            # case cargo cannot honour --precise and exits non-zero. Warn and
-            # carry on: a lockfile heuristic must never be the thing that fails
-            # the gate. If the pinned version genuinely cannot compile, the
-            # build below says so with a precise error instead.
+            # --precise exits non-zero when another package `=`-pins the crate (solana-frozen-abi requires ahash "=0.8.5"); never fail the gate on it.
             cargo update --package "$1@$2" --precise "$3" || \
               echo "::warning::could not bump $1 $2 to $3 (likely pinned by an exact '=' requirement); continuing with the locked version"
           }
@@ -637,10 +515,6 @@ jobs:
           path: /tmp/dylint-lints/target/release
           key: dylint-lints-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ inputs.solana-lints-ref }}
 
-      # otter-sec/anchor-lints is a single Cargo workspace (members =
-      # ["anchor-lints-utils", "lints/*"]), so one workspace build compiles
-      # every lint cdylib into target/release. (The legacy crytic/trailofbits
-      # solana-lints was not a workspace and needed a per-lint build loop.)
       - name: Build lints
         if: steps.lints-cache.outputs.cache-hit != 'true'
         working-directory: /tmp/dylint-lints
@@ -649,9 +523,5 @@ jobs:
       - name: Run dylint
         env:
           DYLINT_LIBRARY_PATH: /tmp/dylint-lints/target/release
-          # RUSTUP_TOOLCHAIN beats a workspace rust-toolchain[.toml] pin in
-          # rustup's resolution order. The lint .so files and dylint driver
-          # are both built against `solana-lints-toolchain`; cargo running
-          # any other rustc would fail to load them.
           RUSTUP_TOOLCHAIN: ${{ inputs.solana-lints-toolchain }}
         run: cargo dylint --all -- --all-targets

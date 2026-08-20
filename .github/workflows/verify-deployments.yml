@@ -3,16 +3,6 @@ name: Verify deployments (reusable)
 permissions:
   contents: read
 
-# Drift detection across every cluster a repo declares: builds the workspace
-# reproducibly, then compares each artifact's sha256 against the bytecode
-# deployed at each `[programs.<cluster>]` entry in Anchor.toml.
-#
-# Companion to verifiable-build.yml, which is the release-time entry point
-# (single cluster, uploads artifacts). This one is meant to run on a schedule.
-# Both resolve their build image the same way, so a repo pinned in one must be
-# pinned identically in the other or the two will report different hashes.
-#
-# Needs no secrets from callers; requires `contents: read` to remain granted.
 on:
   workflow_call:
     inputs:
@@ -101,10 +91,7 @@ jobs:
       run:
         working-directory: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
     steps:
-      # `persist-credentials: false`: this job only reads code (verifiable
-      # build, compares on-chain hashes), never pushes. Drop the
-      # GITHUB_TOKEN that checkout would otherwise leave in `.git/config`
-      # so a downstream step or third-party build script can't use it.
+      # `persist-credentials: false`: this job never pushes, so no GITHUB_TOKEN is left in `.git/config` for a build script to reach.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
         with:
           persist-credentials: false
@@ -112,8 +99,6 @@ jobs:
       - name: Validate Anchor workspace
         env:
           ANCHOR_WORKSPACE: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
-        # Run from $GITHUB_WORKSPACE so this step doesn't fail with a cd
-        # error if the configured directory is missing.
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -130,11 +115,7 @@ jobs:
             exit 1
           fi
 
-      # solana-verify picks its build image from the solana-program version in
-      # Cargo.lock. Resolving it here and passing --base-image explicitly makes
-      # the choice visible, overridable per repo, and turns "no image published
-      # for this version" into a comprehensible error rather than an opaque
-      # `docker pull` 404 mid-build.
+      # solana-verify derives the image from Cargo.lock's solana-program pin, not Anchor.toml; resolve it here to make the choice visible and overridable.
       - name: Resolve build image
         id: image
         shell: bash
@@ -169,9 +150,6 @@ jobs:
           echo "base-image=$image" >> "$GITHUB_OUTPUT"
           echo "Base image: $image"
 
-      # Manifest check first so "tag does not exist" (a repo-configuration
-      # problem) never gets reported as the same thing as a full disk or a
-      # registry blip (infrastructure).
       - name: Pull build image
         shell: bash
         env:
@@ -233,11 +211,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Redirect python3 to a temp file rather than `mapfile -t entries
-          # < <(python3 ...)`: process substitution doesn't propagate the
-          # subshell's exit status, so a tomllib parse error on a malformed
-          # Anchor.toml would silently degrade to "no [programs.*] sections"
-          # and a clean exit.
+          # Redirect to a file, not process substitution: the latter drops the exit status, turning a parse error into a silent "no [programs.*] sections".
           ENTRIES_FILE="${RUNNER_TEMP:-/tmp}/anchor-programs.tsv"
           python3 - > "$ENTRIES_FILE" <<'PY'
           import tomllib
@@ -251,11 +225,6 @@ jobs:
           PY
           mapfile -t entries < "$ENTRIES_FILE"
 
-          # Count only clusters that can actually be checked. `localnet` is
-          # always skipped, so a repo declaring localnet alone has nothing to
-          # verify — and previously exited 0, reporting a green "verified" that
-          # was really "never checked". That is the single most misleading
-          # outcome this workflow can produce, so it is now a failure by default.
           checkable=0
           for entry in "${entries[@]}"; do
             IFS=$'\t' read -r cluster _name _pubkey <<< "$entry"
@@ -313,11 +282,6 @@ jobs:
             echo "| --- | --- | --- | --- | --- | --- |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # `unverified` counts every entry that could have been checked but
-          # wasn't confirmed: a real mismatch, a declared program with no
-          # artifact, or a hash the RPC would not give up. All three mean "this
-          # deployment is not known to match the source", which is what the job
-          # status has to reflect. localnet entries are excluded by design.
           unverified=0
           mismatches=0
           checked=0
@@ -337,9 +301,7 @@ jobs:
               echo "::error::Anchor.toml [programs.$cluster] lists '$name' but the build produced no target/deploy/$name.so — check that the name matches the crate's [lib] name"
               unverified=$((unverified + 1))
             else
-              # get-program-hash retries internally and then aborts the process;
-              # guarding with `if` keeps a failure from killing the summary, and
-              # `tail -n1` drops those retry notices from the captured output.
+              # `tail -n1` drops the RPC client's retry notices; the `if` guard keeps a read failure from killing the summary.
               if on_chain_hash=$(solana-verify get-program-hash "$pubkey" --url "$url" 2>/dev/null | tail -n1) \
                    && [[ -n "$on_chain_hash" ]]; then
                 checked=$((checked + 1))
