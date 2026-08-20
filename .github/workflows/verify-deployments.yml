@@ -36,6 +36,26 @@ on:
         required: false
         default: ""
         type: string
+      library-name:
+        description: >-
+          Crate whose .so to build, passed as `solana-verify build
+          --library-name`. REQUIRED for a workspace whose members are not all
+          SBF-buildable, which is most of them — without it solana-verify builds
+          from the workspace root and cargo resolves every member, failing on the
+          first CLI or client crate. Must match the value the repo's
+          verifiable-build caller passes, or the two workflows compare different
+          builds.
+        required: false
+        default: ""
+        type: string
+      cargo-args:
+        description: >-
+          Extra arguments appended after `--` to the cargo invocation inside the
+          build container, e.g. `--config env.GIT_REV=abc1234`. Must match the
+          repo's verifiable-build caller for the same reason as library-name.
+        required: false
+        default: ""
+        type: string
       solana-verify-version:
         description: "solana-verify CLI version to install"
         required: false
@@ -76,6 +96,7 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
@@ -185,7 +206,20 @@ jobs:
       - name: Verifiable build
         env:
           BASE_IMAGE: ${{ steps.image.outputs.base-image }}
-        run: solana-verify build --base-image "$BASE_IMAGE"
+          LIBRARY_NAME: ${{ inputs.library-name }}
+          CARGO_ARGS: ${{ inputs.cargo-args }}
+        run: |
+          set -euo pipefail
+          args=(--base-image "$BASE_IMAGE")
+          if [[ -n "$LIBRARY_NAME" ]]; then
+            args+=(--library-name "$LIBRARY_NAME")
+          fi
+          if [[ -n "$CARGO_ARGS" ]]; then
+            mapfile -t extra < <(printf '%s' "$CARGO_ARGS" | xargs -n1 printf '%s\n')
+            args+=(-- "${extra[@]}")
+          fi
+          echo "solana-verify build ${args[*]}"
+          solana-verify build "${args[@]}"
 
       - name: Compare against on-chain deployments
         env:

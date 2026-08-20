@@ -355,20 +355,41 @@ jobs:
           #
           # Other macro-generated diagnostics are deliberately NOT allowed here,
           # because unlike the cfgs above they are not fleet-wide: e.g. an Anchor
-          # program whose manifest holds solana-program back to `~2.2` while
-          # solana-account-info resolves to 2.3 gets `-D deprecated` on the
-          # `AccountInfo::realloc` inside `#[program]`. Fix that in the repo
-          # (relax the solana-program requirement) or, if it must be deferred,
-          # pass `clippy-extra-args: "-A deprecated"` from that repo's caller.
-          LINT_ARGS=(
-            --check-cfg 'cfg(feature, values("anchor-debug","custom-heap","custom-panic","no-entrypoint","no-idl","no-log-ix-name","idl-build","cpi"))'
-            --check-cfg 'cfg(target_os, values("solana"))'
-          )
+          # program whose `#[program]` expansion calls the deprecated
+          # `AccountInfo::realloc` gets `-D deprecated`. Fix that in the repo with
+          # a crate-level `#![allow(deprecated)]` (which is what marinade-config
+          # does, and which cannot change codegen or the bytecode hash), or pass
+          # `clippy-extra-args: '-A deprecated'` from that repo's caller.
+          LINT_ARGS=()
+
+          # --check-cfg was nightly-only before rustc 1.80: passing it to an older
+          # toolchain kills cargo at its first --print=cfg probe with "the `-Z
+          # unstable-options` flag must also be passed", so NOTHING gets linted.
+          # Four repos still pin older toolchains (marinade-cli and
+          # solana-stake-status 1.75.0, validator-manager 1.69.0, tx-svc on a 2024
+          # nightly), and the workspace-pinned-toolchain step above exists
+          # precisely so clippy runs on them. Skipping the flags there is safe:
+          # the unexpected_cfgs lint did not exist before 1.80, so there is
+          # nothing to declare and nothing to suppress.
+          rustc_mm=$(rustc -V | sed -E 's/^rustc ([0-9]+)\.([0-9]+).*/\1 \2/')
+          read -r rustc_major rustc_minor <<< "$rustc_mm"
+          if (( rustc_major > 1 || (rustc_major == 1 && rustc_minor >= 80) )); then
+            LINT_ARGS+=(
+              --check-cfg 'cfg(feature, values("anchor-debug","custom-heap","custom-panic","no-entrypoint","no-idl","no-log-ix-name","idl-build","cpi"))'
+              --check-cfg 'cfg(target_os, values("solana"))'
+            )
+          else
+            echo "::notice::rustc ${rustc_major}.${rustc_minor} predates --check-cfg (1.80); skipping cfg declarations, unexpected_cfgs does not exist on this toolchain"
+          fi
           if [[ "$DENY_WARNINGS" == "true" ]]; then
             LINT_ARGS+=(-D warnings)
           fi
           if [[ -n "$EXTRA_ARGS" ]]; then
-            read -r -a extra <<< "$EXTRA_ARGS"
+            # mapfile, not `read -a`: `read` stops at the first newline, so a
+            # caller passing a YAML block scalar would silently lose all but its
+            # first line — and a lint they added to unblock their repo would not
+            # apply while clippy still failed on it.
+            mapfile -t extra < <(printf '%s' "$EXTRA_ARGS" | xargs -n1 printf '%s\n')
             LINT_ARGS+=("${extra[@]}")
           fi
 

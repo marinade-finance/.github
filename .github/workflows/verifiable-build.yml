@@ -268,7 +268,10 @@ jobs:
           # Anything after `--` goes to cargo inside the container. Word-split on
           # purpose: these are separate arguments, not one quoted string.
           if [[ -n "$CARGO_ARGS" ]]; then
-            read -r -a extra <<< "$CARGO_ARGS"
+            # mapfile, not `read -a`: `read` stops at the first newline, and
+            # silently dropping a cargo arg here would silently change the
+            # bytecode this build produces.
+            mapfile -t extra < <(printf '%s' "$CARGO_ARGS" | xargs -n1 printf '%s\n')
             args+=(-- "${extra[@]}")
           fi
           echo "solana-verify build ${args[*]}"
@@ -362,14 +365,28 @@ jobs:
             echo "Program IDs read from Anchor.toml [programs.${PROGRAMS_SECTION}]."
             python3 - > "$ENTRIES" <<'PY'
           import os, tomllib
+          import sys
+
           section = os.environ["PROGRAMS_SECTION"]
           with open("Anchor.toml", "rb") as f:
               data = tomllib.load(f)
           table = data.get("programs", {}).get(section, {})
           if isinstance(table, dict):
               for name, pubkey in table.items():
-                  if isinstance(pubkey, str):
+                  # Anchor also allows `name = { address = "...", idl = "..." }`.
+                  # Read the address out of it rather than skipping the entry:
+                  # silently dropping one and then reporting "all programs match"
+                  # is the failure this job exists to prevent.
+                  if isinstance(pubkey, dict):
+                      pubkey = pubkey.get("address")
+                  if isinstance(pubkey, str) and pubkey:
                       print(f"{name}\t{pubkey}")
+                  else:
+                      sys.stderr.write(
+                          f"::error::Anchor.toml entry '{name}' has no readable address; "
+                          "expected a string or a table with an `address` key\n"
+                      )
+                      sys.exit(1)
           PY
           fi
 
