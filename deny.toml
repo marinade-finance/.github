@@ -58,7 +58,7 @@ exceptions = [{ crate = "ring", allow = ["OpenSSL"] }]
 
 # ring <0.17 declares only `license-file`, which cargo-deny cannot resolve; >=0.17.9 declares its own SPDX expression. RETIRE when no repo resolves ring below 0.17.9.
 [[licenses.clarify]]
-crate = "ring:<0.17"
+crate = "ring:<0.17.9"
 expression = "MIT AND ISC AND OpenSSL"
 license-files = []
 
