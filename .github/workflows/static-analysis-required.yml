@@ -21,3 +21,5 @@ jobs:
       run-solana:           ${{ vars.STATIC_ANALYSIS_RUN_SOLANA           || 'auto' }}
       anchor-cli-version:   ${{ vars.STATIC_ANALYSIS_ANCHOR_CLI_VERSION   || '0.31.1' }}
       clippy-deny-warnings: ${{ vars.STATIC_ANALYSIS_CLIPPY_DENY_WARNINGS != 'false' }}
+      clippy-features:      ${{ vars.STATIC_ANALYSIS_CLIPPY_FEATURES      || 'auto' }}
+      clippy-extra-args:    ${{ vars.STATIC_ANALYSIS_CLIPPY_EXTRA_ARGS    || '' }}

@@ -14,7 +14,7 @@ on:
   # the ref that gets deployed.
   push:
     tags:
-      - "v*"
+      - 'v*'
 
 # Granting `contents: read` is required. A called workflow can never hold more
 # permission than its caller, so tightening this to `{}` breaks the checkout
@@ -43,7 +43,7 @@ jobs:
     with:
       # Every Marinade program repo keeps Anchor.toml at the repo root, so the
       # default is correct and this line can be omitted.
-      anchor-workspace: "."
+      anchor-workspace: '.'
 
       # Usually left empty: the shared workflow derives the build image from the
       # `solana-program` version pinned in Cargo.lock, which is what

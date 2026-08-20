@@ -67,6 +67,17 @@ on:
         required: false
         default: ""
         type: string
+      cargo-args:
+        description: >-
+          Extra arguments appended after `--` to the cargo invocation inside the
+          build container, e.g. `--config env.GIT_REV=abc1234`. REQUIRED for a
+          program that bakes build-time environment into its binary: validator-bonds
+          embeds env!("GIT_REV") / env!("GIT_REV_NAME") in its security_txt, and
+          without these the build produces GIT_REV_MISSING and can never match the
+          deployed bytecode. Whitespace-separated; quote nothing here.
+        required: false
+        default: ""
+        type: string
       verify-onchain:
         description: >-
           Compare each built artifact's sha256 against the bytecode deployed on
@@ -124,6 +135,7 @@ on:
 jobs:
   verifiable-build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: ${{ inputs.anchor-workspace }}
@@ -244,6 +256,7 @@ jobs:
         env:
           BASE_IMAGE: ${{ steps.image.outputs.base-image }}
           LIBRARY_NAME: ${{ inputs.library-name }}
+          CARGO_ARGS: ${{ inputs.cargo-args }}
         run: |
           set -euo pipefail
           # Quote-safe and empty-safe: an unset library-name must not become a
@@ -251,6 +264,12 @@ jobs:
           args=(--base-image "$BASE_IMAGE")
           if [[ -n "$LIBRARY_NAME" ]]; then
             args+=(--library-name "$LIBRARY_NAME")
+          fi
+          # Anything after `--` goes to cargo inside the container. Word-split on
+          # purpose: these are separate arguments, not one quoted string.
+          if [[ -n "$CARGO_ARGS" ]]; then
+            read -r -a extra <<< "$CARGO_ARGS"
+            args+=(-- "${extra[@]}")
           fi
           echo "solana-verify build ${args[*]}"
           solana-verify build "${args[@]}"

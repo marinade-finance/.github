@@ -74,16 +74,29 @@ resolved value is shown so you can confirm it against the run log. All eight
 resolutions below were produced by running the workflow's actual resolution step
 against each repo's real `Cargo.lock`.
 
-| Repo | `anchor-workspace` | `base-image` (resolved) | `verify-onchain` | `[programs.mainnet]` | Program name → ID |
-| --- | --- | --- | --- | --- | --- |
-| `validator-bonds` | `.` | *(empty)* → `…:2.3.0` | `true` | already correct | `validator_bonds` → `vBoNdEvzMrSai7is21XgVYik65mqtaKXuSdMBJ1xkW4` |
-| `marinade-config` | `.` | *(empty)* → `…:2.3.0` | `true` | already correct | `marinade_config` → `MCfgVNYfk5NmQQuyoM7BoUPoqpNtdkBQ1273AJVQk4x` |
-| `distributor` | `.` | *(empty)* → `…:2.3.0` | `true` | already correct | `merkle_distributor` → `meRdrpyDCAbQxunjZSLmJ78GxQcn4fJUvqU93GoHZr1` |
-| `native-staking` | `.` | *(empty)* → `…:2.1.11` | `true` | **add** — [patch](anchor-toml/native-staking.patch) | `marinade_native_proxy` → `mnspJQyF1KdDEs5c6YJPocYdY1esBgVQFufM2dY9oDk` |
-| `solana-randomness-registry` | `.` | *(empty)* → `…:2.2.1` | `true` | **add** — [patch](anchor-toml/solana-randomness-registry.patch) | `randomness_registry` → `rand4M2SB9tZmTz37p9yEhXC6LtWnBJhBRXkjX2YmNH` |
-| `atomic-swap-contract` | `.` | *(empty)* → `…:2.3.0` | `true` | **add** — [patch](anchor-toml/atomic-swap-contract.patch) | `atomic_swap` → `AtoMXWZvgxPLRzG2s1KsN9UKFREXD15j6PuP9aMXth5` |
-| `liquid-staking-program` | — | **no image exists** | — | **add** — [patch](anchor-toml/liquid-staking-program.patch) | `marinade_finance` → `MarBmsSgKXdrN1egZf5sqe1TMai9K1rChYNDJgjq7aD` |
-| `directed-stake` | — | **no image exists** | — | already correct | `directed_stake` → `dstK1PDHNoKN9MdmftRzsEbXP5T1FTBiQBm1Ee3meVd` |
+Two caveats found by reviewing the adoption PRs against the repos themselves, both
+of which make a run fail rather than mislead:
+
+- **A derived image is not always a usable one.** `marinade-config` must override to
+  `4.0.3`: the SBF platform-tools in the 2.x and 3.x images ship Rust 1.84, which
+  cannot parse the 27 edition-2024 crates its lockfile pulls in, and its recorded
+  hash was produced with 4.0.3. Check a repo's own build CI before trusting the
+  derived value.
+- **`library-name` is required for every multi-member workspace.** Without it
+  `solana-verify` builds from the workspace root, cargo resolves every member, and
+  the build dies on the first crate that is not a Solana program — a CLI, a client,
+  a test harness. Only a single-crate repo can leave it empty.
+
+| Repo | `anchor-workspace` | `library-name` | `base-image` | `solana-verify-version` | `[programs.mainnet]` | Program name → ID |
+| --- | --- | --- | --- | --- | --- | --- |
+| `validator-bonds` | `.` | `validator_bonds` | *(empty)* → `…:2.3.0` | default `0.4.15` | already correct | `validator_bonds` → `vBoNdEvzMrSai7is21XgVYik65mqtaKXuSdMBJ1xkW4` |
+| `marinade-config` | `.` | `marinade_config` | **`…:4.0.3`** (override) | **`0.4.11`** — produced the recorded hash | already correct | `marinade_config` → `MCfgVNYfk5NmQQuyoM7BoUPoqpNtdkBQ1273AJVQk4x` |
+| `distributor` | `.` | `merkle_distributor` | *(empty)* → `…:2.3.0` | default `0.4.15` | already correct | `merkle_distributor` → `meRdrpyDCAbQxunjZSLmJ78GxQcn4fJUvqU93GoHZr1` |
+| `native-staking` | `.` | `marinade_native_proxy` | *(empty)* → `…:2.1.11` | default `0.4.15` | **add** — [patch](anchor-toml/native-staking.patch) | `marinade_native_proxy` → `mnspJQyF1KdDEs5c6YJPocYdY1esBgVQFufM2dY9oDk` |
+| `solana-randomness-registry` | `.` | `randomness_registry` | *(empty)* → `…:2.2.1` | **`0.4.4`** — was pinned by the workflow this replaces | **add** — [patch](anchor-toml/solana-randomness-registry.patch) | `randomness_registry` → `rand4M2SB9tZmTz37p9yEhXC6LtWnBJhBRXkjX2YmNH` |
+| `atomic-swap-contract` | `.` | `atomic_swap` | *(empty)* → `…:2.3.0` | default `0.4.15` | **add** — [patch](anchor-toml/atomic-swap-contract.patch) | `atomic_swap` → `AtoMXWZvgxPLRzG2s1KsN9UKFREXD15j6PuP9aMXth5` |
+| `liquid-staking-program` | — | `marinade_finance` | **no image exists** | — | **add** — [patch](anchor-toml/liquid-staking-program.patch) | `marinade_finance` → `MarBmsSgKXdrN1egZf5sqe1TMai9K1rChYNDJgjq7aD` |
+| `directed-stake` | — | `directed_stake` | **no image exists** | — | already correct | `directed_stake` → `dstK1PDHNoKN9MdmftRzsEbXP5T1FTBiQBm1Ee3meVd` |
 
 `liquid-staking-program` and `directed-stake` **do not adopt in this rollout** —
 see [below](#liquid-staking-program-and-directed-stake). Their `Anchor.toml`
