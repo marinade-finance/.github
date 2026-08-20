@@ -99,6 +99,11 @@ ignore = [
 # *solely* under one of those, CI fails and the fix is a reviewed one-line
 # addition here — that is the intended workflow, not a regression.
 [licenses]
+# Skip the unlicensed check for crates marked `publish = false`. Deliberate: it
+# takes 67 first-party crates needing a license field down to 32, at the cost of
+# never flagging a future internal crate.
+private = { ignore = true }
+
 allow = [
   # Classic permissive.
   "MIT",
