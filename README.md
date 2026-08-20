@@ -11,7 +11,7 @@ A reusable workflow that runs static analysis on Rust and Anchor codebases. It a
 | **clippy** | Rust linter (idioms, perf, common bugs, anti-patterns) | `<rust-workspace>/Cargo.toml` present (workspace root manifest) |
 | **cargo-deny** | Supply chain: RustSec CVE advisories, license allowlist, banned/yanked crates, duplicates | `<rust-workspace>/Cargo.toml` present (workspace root manifest) |
 | **Sec3 X-Ray** | Solana dataflow analyzer: signer/owner checks, PDA seed reuse, arbitrary CPI, account substitution, lamport math overflow | `<anchor-workspace>/Anchor.toml` present |
-| **solana-lints** | Trail of Bits Dylint-based Anchor pattern lints (insecure init, bump seed canonicalization, audit-derived antipatterns) | `<anchor-workspace>/Anchor.toml` present |
+| **solana-lints** | otter-sec Dylint-based Anchor pattern lints (insecure init, bump seed canonicalization, audit-derived antipatterns) | `<anchor-workspace>/Anchor.toml` present |
 
 Reproducible builds are **not** part of this workflow — see [Verifiable build](#verifiable-build-verifiable-buildyml) below for why, and how to enable them per repo.
 
@@ -69,7 +69,7 @@ All inputs are optional.
 | `xray-version` | `v0.0.6` | Sec3 X-Ray release tag to install |
 | `xray-sha256` | `""` (skip) | SHA256 of the X-Ray linux-amd64 tarball. When set, the downloaded archive is verified against this checksum before extraction. Strongly recommended for supply-chain safety; leave empty to skip verification (a warning is logged) |
 | `anchor-cli-version` | `0.31.1` | `anchor-cli` version installed for the sec3-xray job (X-Ray shells out to `anchor` for IDL extraction) |
-| `solana-lints-repo` | `otter-sec/anchor-lints` | Git URL of the dylint lints to build. otter-sec is actively maintained, Anchor-focused, and a single Cargo workspace; the legacy `crytic`/`trailofbits` `solana-lints` is dormant and stuck on `nightly-2025-01-09` (rustc 1.86), too old for workspaces whose deps need rustc 1.88+ |
+| `solana-lints-repo` | `https://github.com/otter-sec/anchor-lints.git` | Git URL of the dylint lints to build, passed straight to `git clone`. otter-sec is actively maintained, Anchor-focused, and a single Cargo workspace; the legacy `crytic`/`trailofbits` `solana-lints` is dormant and stuck on `nightly-2025-01-09` (rustc 1.86), too old for workspaces whose deps need rustc 1.88+ |
 | `solana-lints-ref` | (pinned SHA) | Git ref of `solana-lints-repo` to build lints from; must be compatible with `solana-lints-toolchain`, so bump the two together |
 | `cargo-dylint-version` | `5.0.0` | `cargo-dylint` / `dylint-link` version installed for the solana-lints job. Must match the `dylint_linting` version the lints repo builds against — otter-sec/anchor-lints uses dylint 5.x |
 | `deny-config` | `…/main/deny.toml` | URL of the cargo-deny config to fetch. Override to pin policy to a tag/SHA |

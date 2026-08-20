@@ -504,6 +504,7 @@ jobs:
                         }' Cargo.lock)
 
       - name: Clone dylint lints
+        id: lints-checkout
         env:
           REPO: ${{ inputs.solana-lints-repo }}
           REF: ${{ inputs.solana-lints-ref }}
@@ -511,13 +512,14 @@ jobs:
           set -euo pipefail
           git clone "$REPO" /tmp/dylint-lints
           git -C /tmp/dylint-lints checkout "$REF"
+          echo "sha=$(git -C /tmp/dylint-lints rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Cache built lint libraries
         id: lints-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/dylint-lints/target/release
-          key: dylint-lints-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ inputs.solana-lints-ref }}
+          key: dylint-lints-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ steps.lints-checkout.outputs.sha }}
 
       - name: Build lints
         if: steps.lints-cache.outputs.cache-hit != 'true'
