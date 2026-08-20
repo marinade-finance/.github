@@ -129,31 +129,60 @@ Skipped jobs render as gray "skipped" rather than failures, so a TS-only repo wi
 
 A **separate** reusable workflow that produces the reproducible BPF build: a sha256 bytecode hash table in the run summary, plus a `verifiable-build-<sha>` artifact containing `target/deploy/*.so` (90 days by default). The build runs inside Ellipsis Labs's `solana-verifiable-build` Docker image via `solana-verify build`, so the output is bit-for-bit reproducible.
 
-It is deliberately **not** part of `static-analysis.yml`. Static analysis is attached to repos through an org ruleset, and rulesets only ever trigger a required workflow on `pull_request` / `merge_group` — so a build gated on "push to the default branch" or `workflow_dispatch` could never fire through that path. Releases and manual builds need their own entry point, which means a wrapper committed **in the consumer repo** at `.github/workflows/verifiable-build.yml`:
+It is deliberately **not** part of `static-analysis.yml`. Static analysis is attached through an org ruleset, and rulesets only trigger a required workflow on `pull_request` / `merge_group` — so a build gated on release tags or `workflow_dispatch` could never fire that way. Each program repo therefore commits its own caller at `.github/workflows/verifiable-build.yml`:
 
 ```yaml
 name: Verifiable Build
 on:
+  workflow_dispatch:
   push:
-    branches: [main]      # adjust if the default branch is named differently
-  workflow_dispatch:      # enables manual runs on any branch
+    tags:
+      - 'v*'
 permissions:
   contents: read
+concurrency:
+  group: verifiable-build-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   verifiable-build:
     uses: marinade-finance/.github/.github/workflows/verifiable-build.yml@main
-    # with:
-    #   anchor-workspace: ./on-chain    # if Anchor.toml is not at the repo root
-    #   solana-verify-version: 0.4.15   # bumping can change the hash
+    with:
+      library-name: 'my_program'
 ```
 
-The wrapper's `on:` block is the whole gate — the reusable workflow runs whenever it is called and performs no internal event checks. It fails fast if `Anchor.toml` is missing from `anchor-workspace`.
+`concurrency` must be declared in the caller: a called workflow evaluates it in the caller's context, so a shared group name deadlocks it against the calling run.
 
 | Input | Default | Purpose |
 | --- | --- | --- |
-| `anchor-workspace` | `.` | Path to the Anchor workspace root (must contain `Anchor.toml`) |
-| `solana-verify-version` | `0.4.15` | `solana-verify` CLI version. Pinned so hashes stay reproducible; a bump can change the bytecode hash, so treat it as a deliberate change |
-| `artifact-retention-days` | `90` | Retention period for the uploaded `.so` artifact |
+| `library-name` | — | Crate to build. Required for any workspace whose members are not all SBF-buildable, or `solana-verify` builds the workspace root and fails on the first CLI or client crate |
+| `base-image` | derived from `Cargo.lock` | Build image. Set it when the derived one cannot build the repo |
+| `solana-verify-version` | `0.4.15` | A bump can change the bytecode hash |
+| `cargo-args` | — | Appended after `--`. Needed by programs that bake build-time env into the binary |
+| `verify-onchain` | `true` | Compare the built hash against deployed bytecode; fails on mismatch |
+| `programs-section` | `mainnet` | Which `[programs.<cluster>]` table to read IDs from |
+| `program-ids` | — | Override the IDs instead of reading `Anchor.toml` |
+| `rpc-url` | mainnet-beta | RPC endpoint for fetching deployed bytecode |
+| `fail-on-mismatch` | `true` | Set false to report without failing |
+| `require-programs-section` | `true` | Fail rather than pass when there is nothing to verify |
+| `anchor-workspace` | `.` | Anchor workspace root |
+| `artifact-retention-days` | `90` | Retention for the uploaded `.so` |
+
+### Per-repo values
+
+Measured against each repo's real `Cargo.lock` and mainnet deployment.
+
+| Repo | `library-name` | `base-image` | `solana-verify-version` | Tag trigger |
+| --- | --- | --- | --- | --- |
+| `validator-bonds` | `validator_bonds` | derived `2.3.0` | default | `contract-v*` |
+| `marinade-config` | `marinade_config` | **`4.0.3`** — 2.x/3.x images ship Rust 1.84, too old for its edition-2024 crates | **`0.4.11`** — produced the recorded hash | `v*` |
+| `distributor` | `merkle_distributor` | derived `2.3.0` | default | `v*` |
+| `native-staking` | `marinade_native_proxy` | derived `2.1.11` | default | `mainnet-*` |
+| `solana-randomness-registry` | `randomness_registry` | derived `2.2.1` | **`0.4.4`** — pinned by the workflow it replaced | `v*` |
+| `atomic-swap-contract` | `atomic_swap` | derived `2.3.0` | default | `v*` |
+| `liquid-staking-program` | `marinade_finance` | **none published** for its `1.15.2` lockfile | — | not adopting |
+| `directed-stake` | `directed_stake` | **none published** for its `1.15.2` lockfile | — | not adopting |
+
+`solana-verify` picks its image from the `solana-program` version in `Cargo.lock`, not `Anchor.toml`'s `solana_version`; those disagree in four of these repos, so the workflow resolves it, logs it, and passes `--base-image` explicitly.
 
 ## Verify deployments (manual)
 
