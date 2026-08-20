@@ -127,7 +127,7 @@ Skipped jobs render as gray "skipped" rather than failures, so a TS-only repo wi
 
 ## Verifiable build (`verifiable-build.yml`)
 
-A **separate** reusable workflow that produces the reproducible BPF build: a sha256 bytecode hash table in the run summary, plus a `verifiable-build-<sha>` artifact containing `target/deploy/*.so` (90 days by default). The build runs inside Ellipsis Labs's `solana-verifiable-build` Docker image via `solana-verify build`, so the output is bit-for-bit reproducible.
+A **separate** reusable workflow that produces the reproducible BPF build: a sha256 bytecode hash table in the run summary, plus a `verifiable-build-<sha>` artifact containing `target/deploy/*.so` (90 days by default). The build runs inside the Solana Foundation's `solanafoundation/solana-verifiable-build` Docker image, driven by Ellipsis Labs's `solana-verify build`, so the output is bit-for-bit reproducible.
 
 It is deliberately **not** part of `static-analysis.yml`. Static analysis is attached through an org ruleset, and rulesets only trigger a required workflow on `pull_request` / `merge_group` — so a build gated on release tags or `workflow_dispatch` could never fire that way. Each program repo therefore commits its own caller at `.github/workflows/verifiable-build.yml`:
 
@@ -163,7 +163,6 @@ jobs:
 | `program-ids` | — | Override the IDs instead of reading `Anchor.toml` |
 | `rpc-url` | mainnet-beta | RPC endpoint for fetching deployed bytecode |
 | `fail-on-mismatch` | `true` | Set false to report without failing |
-| `require-programs-section` | `true` | Fail rather than pass when there is nothing to verify |
 | `anchor-workspace` | `.` | Anchor workspace root |
 | `artifact-retention-days` | `90` | Retention for the uploaded `.so` |
 

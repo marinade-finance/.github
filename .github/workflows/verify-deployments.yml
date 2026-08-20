@@ -179,7 +179,10 @@ jobs:
       - name: Install solana-verify
         if: steps.cache-solana-verify.outputs.cache-hit != 'true'
         working-directory: ${{ github.workspace }}
-        run: cargo install --locked solana-verify --version ${{ inputs.solana-verify-version }}
+        shell: bash
+        env:
+          SOLANA_VERIFY_VERSION: ${{ inputs.solana-verify-version }}
+        run: cargo install --locked solana-verify --version "$SOLANA_VERIFY_VERSION"
 
       - name: Verifiable build
         env:
@@ -207,6 +210,7 @@ jobs:
           BASE_IMAGE: ${{ steps.image.outputs.base-image }}
           REQUIRE_PROGRAMS_SECTION: ${{ inputs.require-programs-section }}
           FAIL_ON_MISMATCH: ${{ inputs.fail-on-mismatch }}
+          SOLANA_VERIFY_VERSION: ${{ inputs.solana-verify-version }}
         shell: bash
         run: |
           set -euo pipefail
@@ -214,13 +218,21 @@ jobs:
           # Redirect to a file, not process substitution: the latter drops the exit status, turning a parse error into a silent "no [programs.*] sections".
           ENTRIES_FILE="${RUNNER_TEMP:-/tmp}/anchor-programs.tsv"
           python3 - > "$ENTRIES_FILE" <<'PY'
-          import tomllib
+          import sys, tomllib
           with open("Anchor.toml", "rb") as f:
               data = tomllib.load(f)
           for cluster, mapping in data.get("programs", {}).items():
               if not isinstance(mapping, dict):
                   continue
               for name, pubkey in mapping.items():
+                  if isinstance(pubkey, dict):
+                      pubkey = pubkey.get("address")
+                  if not isinstance(pubkey, str) or not pubkey:
+                      sys.stderr.write(
+                          f"::error::Anchor.toml [programs.{cluster}] entry '{name}' has no "
+                          "readable address; expected a string or a table with an `address` key\n"
+                      )
+                      sys.exit(1)
                   print(f"{cluster}\t{name}\t{pubkey}")
           PY
           mapfile -t entries < "$ENTRIES_FILE"
@@ -276,7 +288,7 @@ jobs:
           {
             echo "## Verify deployments"
             echo ""
-            echo "solana-verify \`${{ inputs.solana-verify-version }}\` — image \`${BASE_IMAGE}\` — built at \`$(git rev-parse --short HEAD)\`"
+            echo "solana-verify \`${SOLANA_VERIFY_VERSION}\` — image \`${BASE_IMAGE}\` — built at \`$(git rev-parse --short HEAD)\`"
             echo ""
             echo "| Cluster | Program | Pubkey | Local | On-chain | Status |"
             echo "| --- | --- | --- | --- | --- | --- |"

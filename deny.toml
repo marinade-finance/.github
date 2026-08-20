@@ -4,7 +4,7 @@
 # Default "all" yields 276 unmaintained findings, 251 of them transitive Solana/Anchor/SPL crates no repo can act on. RETIRE (back to "all") once the fleet is on agave 3.x.
 unmaintained = "workspace"
 ignore = [
-  # rustls-webpki cert-validation bugs, no stable fixed release exists (18 repos). RETIRE when 0.104.0 ships stable.
+  # rustls-webpki cert-validation bugs. Fixed in 0.103.12/0.103.13, but the affected 0.101.7/0.102.8 copies arrive via rustls 0.21/0.22 pins no repo can move alone (18 repos). RETIRE when no repo resolves rustls-webpki below 0.103.13.
   "RUSTSEC-2026-0098",
   "RUSTSEC-2026-0099",
   "RUSTSEC-2026-0104",

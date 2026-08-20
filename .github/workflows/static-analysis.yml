@@ -195,7 +195,8 @@ jobs:
             echo "No workspace-pinned toolchain; relying on the one dtolnay installed."
             exit 0
           fi
-          ACTIVE=$(rustup show active-toolchain | awk '{print $1}')
+          # `head -n1`: rustup 1.28.0 appends an "active because:" line that awk would fold into the name.
+          ACTIVE=$(rustup show active-toolchain | head -n1 | awk '{print $1}')
           if [[ -z "$ACTIVE" ]]; then
             echo "::error::rust-toolchain[.toml] present but rustup couldn't resolve the pinned toolchain"
             exit 1
@@ -366,7 +367,10 @@ jobs:
       - name: Install anchor-cli
         if: steps.cache-anchor.outputs.cache-hit != 'true'
         working-directory: ${{ github.workspace }}
-        run: cargo install --locked anchor-cli --version ${{ inputs.anchor-cli-version }}
+        shell: bash
+        env:
+          ANCHOR_CLI_VERSION: ${{ inputs.anchor-cli-version }}
+        run: cargo install --locked anchor-cli --version "$ANCHOR_CLI_VERSION"
 
       - name: Install Sec3 X-Ray
         working-directory: ${{ github.workspace }}
@@ -519,6 +523,24 @@ jobs:
         if: steps.lints-cache.outputs.cache-hit != 'true'
         working-directory: /tmp/dylint-lints
         run: cargo build --release
+
+      # Without this, an empty or stale lint cache makes `cargo dylint --all` load zero lints and exit 0 — a green gate that checked nothing.
+      - name: Verify lint libraries were built
+        shell: bash
+        env:
+          DYLINT_LIBRARY_PATH: /tmp/dylint-lints/target/release
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          # dylint only loads files named lib<name>@<toolchain>.so; a bare lib<name>.so is invisible to it.
+          libs=("$DYLINT_LIBRARY_PATH"/lib*@*.so)
+          shopt -u nullglob
+          if [[ ${#libs[@]} -eq 0 ]]; then
+            echo "::error::No dylint libraries in $DYLINT_LIBRARY_PATH — cargo dylint would load zero lints and pass. Bust the dylint-lints cache or check solana-lints-ref."
+            exit 1
+          fi
+          printf 'loaded %d lint library(ies):\n' "${#libs[@]}"
+          printf '  %s\n' "${libs[@]##*/}"
 
       - name: Run dylint
         env:
