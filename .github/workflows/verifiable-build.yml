@@ -204,6 +204,14 @@ jobs:
           key: solana-verify-${{ runner.os }}-${{ inputs.solana-verify-version }}
 
       # Installed from the repo root; inside the Anchor workspace `cargo install` would inherit its .cargo/config.toml and toolchain pin.
+      # solana-verify <= 0.4.11 pulls hidapi, whose build needs libudev; marinade-config
+      # pins 0.4.11 because that is the version its recorded hash was produced with.
+      - name: Install libudev for hidapi
+        if: steps.cache-solana-verify.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libudev-dev pkg-config
+
       - name: Install solana-verify
         if: steps.cache-solana-verify.outputs.cache-hit != 'true'
         working-directory: ${{ github.workspace }}
