@@ -12,6 +12,18 @@ ignore = [
   # curve25519-dalek 3.2.x / ed25519-dalek 1.0.1, reached only through monolithic solana-sdk <=2.x (25 repos). RETIRE per repo on moving to the granular solana-* crates.
   "RUSTSEC-2024-0344",
   "RUSTSEC-2022-0093",
+
+  # patched = [] in the advisory DB: no release will ever fix these, and all four
+  # are informational = "unmaintained" rather than vulnerabilities. Ignoring them
+  # blinds nothing, unlike h2 0.3 / ring 0.16 / quinn-proto 0.8 / rustls 0.20 /
+  # tungstenite 0.17 / borsh 0.9, which all have reachable fixes and stay enforced.
+  # bincode 1.x is solana-sdk's wire format; im/bitmaps/sized-chunks come via
+  # solana-runtime and their upstreams are archived.
+  # RETIRE: when Solana drops bincode 1.x and the im family.
+  "RUSTSEC-2025-0141",
+  "RUSTSEC-2026-0247",
+  "RUSTSEC-2026-0248",
+  "RUSTSEC-2026-0251",
 ]
 
 # Permissive-only allow list: nothing copyleft or source-disclosure-requiring may be added without legal review.
