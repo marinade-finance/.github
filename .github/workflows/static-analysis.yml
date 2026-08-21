@@ -234,9 +234,6 @@ jobs:
             sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
           fi
 
-      # A build script that compiles .proto files needs them present; checkout
-      # does not fetch submodules, so tx-svc's jito_protos/protos is empty and
-      # its build.rs fails before clippy sees any Rust.
       - name: Check out submodules (if any)
         shell: bash
         run: |
@@ -540,9 +537,6 @@ jobs:
             sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
           fi
 
-      # A build script that compiles .proto files needs them present; checkout
-      # does not fetch submodules, so tx-svc's jito_protos/protos is empty and
-      # its build.rs fails before clippy sees any Rust.
       - name: Check out submodules (if any)
         shell: bash
         run: |
