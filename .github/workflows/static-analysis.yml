@@ -37,7 +37,7 @@ on:
         default: "stable"
         type: string
       solana-lints-toolchain:
-        description: "Nightly toolchain for the dylint lints (must match the lints repo's rust-toolchain). otter-sec/anchor-lints pins nightly-2025-09-18 (rustc 1.91); the legacy crytic/trailofbits solana-lints is stuck on nightly-2025-01-09 (rustc 1.86), too old for workspaces whose deps require rustc 1.88. Forced via RUSTUP_TOOLCHAIN at dylint time so a workspace rust-toolchain[.toml] pin can't override it."
+        description: "Fallback nightly for the dylint lints, used only when solana-lints-repo pins none of its own — the lints repo's rust-toolchain always wins, because dylint builds its driver for whatever the lint libraries were built with. Forced via RUSTUP_TOOLCHAIN at dylint time so a workspace rust-toolchain[.toml] pin can't override it."
         required: false
         default: "nightly-2025-09-18"
         type: string
@@ -494,10 +494,6 @@ jobs:
     needs: detect
     if: needs.detect.outputs.has-anchor == 'true'
     runs-on: ubuntu-24.04
-    env:
-      # dylint builds its driver from a generated manifest that resolves to the newest crates.io
-      # versions, which now exceed the MSRV of the older nightlies some repos pin.
-      CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
     defaults:
       run:
         working-directory: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
@@ -505,6 +501,38 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
         with:
           persist-credentials: false
+
+      - name: Clone dylint lints
+        id: lints-checkout
+        env:
+          REPO: ${{ inputs.solana-lints-repo }}
+          REF: ${{ inputs.solana-lints-ref }}
+        run: |
+          set -euo pipefail
+          git clone "$REPO" /tmp/dylint-lints
+          git -C /tmp/dylint-lints checkout "$REF"
+          echo "sha=$(git -C /tmp/dylint-lints rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # The lints repo's own pin wins over the input: dylint names its libraries
+      # lib<name>@<toolchain>.so and builds its driver for whatever they were built with,
+      # so a mismatched input produces a driver on a toolchain the lints cannot support.
+      - name: Resolve lints toolchain
+        id: lints-toolchain
+        env:
+          TOOLCHAIN_INPUT: ${{ inputs.solana-lints-toolchain }}
+        run: |
+          set -euo pipefail
+          pinned=$(sed -nE 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' \
+                     /tmp/dylint-lints/rust-toolchain.toml /tmp/dylint-lints/rust-toolchain 2>/dev/null | head -1)
+          if [[ -z "$pinned" ]]; then
+            echo "lints repo pins no toolchain; using solana-lints-toolchain=$TOOLCHAIN_INPUT"
+            echo "toolchain=$TOOLCHAIN_INPUT" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$pinned" != "$TOOLCHAIN_INPUT" ]]; then
+            echo "::warning::lints repo pins $pinned but solana-lints-toolchain is $TOOLCHAIN_INPUT; using $pinned"
+          fi
+          echo "toolchain=$pinned" >> "$GITHUB_OUTPUT"
 
       # Stable before nightly: dtolnay makes the last-installed toolchain the rustup default, and dylint needs the nightly to win.
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
@@ -518,7 +546,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
-          toolchain: ${{ inputs.solana-lints-toolchain }}
+          toolchain: ${{ steps.lints-toolchain.outputs.toolchain }}
           components: rustc-dev, llvm-tools-preview
 
       - name: Install libclang for clang-sys (if used)
@@ -567,7 +595,7 @@ jobs:
       - name: Patch nightly-incompatible deps in Cargo.lock
         shell: bash
         env:
-          RUSTUP_TOOLCHAIN: ${{ inputs.solana-lints-toolchain }}
+          RUSTUP_TOOLCHAIN: ${{ steps.lints-toolchain.outputs.toolchain }}
         run: |
           set -euo pipefail
           [[ -f Cargo.lock ]] || { echo "No Cargo.lock; skipping."; exit 0; }
@@ -598,23 +626,12 @@ jobs:
                           print name, $0
                         }' Cargo.lock)
 
-      - name: Clone dylint lints
-        id: lints-checkout
-        env:
-          REPO: ${{ inputs.solana-lints-repo }}
-          REF: ${{ inputs.solana-lints-ref }}
-        run: |
-          set -euo pipefail
-          git clone "$REPO" /tmp/dylint-lints
-          git -C /tmp/dylint-lints checkout "$REF"
-          echo "sha=$(git -C /tmp/dylint-lints rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
       - name: Restore built lint libraries
         id: lints-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/dylint-lints/target/release
-          key: dylint-lints-v3-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ steps.lints-checkout.outputs.sha }}
+          key: dylint-lints-v3-${{ runner.os }}-${{ steps.lints-toolchain.outputs.toolchain }}-${{ steps.lints-checkout.outputs.sha }}
 
       # A cache hit that restores no libraries rebuilds rather than fails: dylint would
       # otherwise load zero lints and exit 0 — a green gate that checked nothing.
@@ -645,10 +662,10 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/dylint-lints/target/release
-          key: dylint-lints-v3-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ steps.lints-checkout.outputs.sha }}
+          key: dylint-lints-v3-${{ runner.os }}-${{ steps.lints-toolchain.outputs.toolchain }}-${{ steps.lints-checkout.outputs.sha }}
 
       - name: Run dylint
         env:
           DYLINT_LIBRARY_PATH: /tmp/dylint-lints/target/release
-          RUSTUP_TOOLCHAIN: ${{ inputs.solana-lints-toolchain }}
+          RUSTUP_TOOLCHAIN: ${{ steps.lints-toolchain.outputs.toolchain }}
         run: cargo dylint --all -- --all-targets
