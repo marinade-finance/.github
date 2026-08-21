@@ -86,6 +86,15 @@ on:
         required: false
         default: "5.0.0"
         type: string
+      xray-fail-on-findings:
+        description: >-
+          Fail the sec3-xray job when X-Ray reports potential vulnerabilities.
+          Its own exit code is always 0 and its findings never matched the fatal-error
+          patterns, so before this the check could not fail on a finding. Set false to
+          annotate without failing while a repo works through a backlog.
+        required: false
+        default: true
+        type: boolean
       deny-config:
         description: "URL of the cargo-deny config to use. Pin to a tag/SHA for stable behavior across reusable-workflow versions."
         required: false
@@ -428,6 +437,7 @@ jobs:
       - name: Run X-Ray
         env:
           ANCHOR_PROGRAMS_PATH: ${{ inputs.anchor-programs-path || 'programs' }}
+          XRAY_FAIL_ON_FINDINGS: ${{ inputs.xray-fail-on-findings }}
         # X-Ray exits 0 on failure. Match only its own fatal lines: its IR-lowering pass emits `: error: ` diagnostics on valid Anchor code.
         run: |
           set -euo pipefail
@@ -446,6 +456,41 @@ jobs:
               echo "::error::$line"
             done < <(grep -nE '(^sh: [0-9]+:|^Error:|^ERROR:)' "$LOG")
             exit 1
+          fi
+
+          # X-Ray's own vulnerability findings live in a summary block and never
+          # touched the patterns above, so the job passed no matter what it found.
+          SUMMARY=$(sed -n '/[Ss]ummary of potential vulnerabilities/,$p' "$LOG")
+          {
+            echo "## Sec3 X-Ray"
+            echo ""
+            if [[ -n "$SUMMARY" ]]; then
+              echo '```'
+              echo "$SUMMARY"
+              echo '```'
+            else
+              echo "No findings summary in the output."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ -z "$SUMMARY" ]]; then
+            echo "::warning::X-Ray printed no findings summary — its output format may have changed, so findings cannot be detected. Check the log and the xray-version input."
+            exit 0
+          fi
+
+          FINDINGS=$(printf '%s\n' "$SUMMARY" \
+            | grep -nEi '(critical|high|medium|low)[[:space:]]*(severity|:)|severity[[:space:]]*[:=]|^[[:space:]]*[0-9]+\.[[:space:]]*[A-Za-z]' \
+            || true)
+
+          if [[ -n "$FINDINGS" ]]; then
+            while IFS= read -r line; do
+              echo "::error::X-Ray: $line"
+            done <<< "$FINDINGS"
+            if [[ "$XRAY_FAIL_ON_FINDINGS" == "true" ]]; then
+              echo "::error::X-Ray reported potential vulnerabilities. Set xray-fail-on-findings: false to report without failing."
+              exit 1
+            fi
+            echo "::warning::X-Ray reported potential vulnerabilities; not failing because xray-fail-on-findings is false."
           fi
 
   solana-lints:
