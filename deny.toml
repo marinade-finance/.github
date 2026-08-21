@@ -56,7 +56,7 @@ ignore = [
 # not report, so this is the only signal we get for it.
 yanked = "deny"
 
-# Permissive-only allow list: nothing copyleft or source-disclosure-requiring may be added without legal review.
+# Permissive by default; every copyleft entry is grouped and named below. Adding one is a legal decision, not an engineering one.
 [licenses]
 # Skips the unlicensed check for `publish = false` crates. RETIRE when every first-party crate declares a license field.
 private = { ignore = true }
@@ -82,6 +82,13 @@ allow = [
   "CDLA-Permissive-2.0",
   # libbz2-rs-sys, the default backend of bzip2 0.6 (agave-snapshots 4.x).
   "bzip2-1.0.6",
+  # Strong copyleft, allowed by decision. AGPL-3.0 section 13 extends source disclosure to
+  # users who reach the software over a network, which reaches our services and not just our
+  # binaries. All three spellings are listed because an allow entry matches the exact SPDX id
+  # a crate declares. Nothing in the fleet resolves to AGPL today.
+  "AGPL-3.0",
+  "AGPL-3.0-only",
+  "AGPL-3.0-or-later",
 ]
 # The OpenSSL license is acceptable only for the BoringSSL-derived shims in ring 0.16 (9 repos). RETIRE with the clarify entry below.
 exceptions = [{ crate = "ring", allow = ["OpenSSL"] }]
