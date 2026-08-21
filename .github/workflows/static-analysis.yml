@@ -610,16 +610,12 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/dylint-lints/target/release
-          key: dylint-lints-v2-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ steps.lints-checkout.outputs.sha }}
+          key: dylint-lints-v3-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ steps.lints-checkout.outputs.sha }}
 
-      # --workspace, not a bare build: the lints repo's root is itself a package, so the default build target is that root crate and none of the lints/* cdylibs.
+      # A cache hit that restores no libraries rebuilds rather than fails: dylint would
+      # otherwise load zero lints and exit 0 — a green gate that checked nothing.
       - name: Build lints
-        if: steps.lints-cache.outputs.cache-hit != 'true'
         working-directory: /tmp/dylint-lints
-        run: cargo build --release --workspace
-
-      # Without this, an empty or stale lint cache makes `cargo dylint --all` load zero lints and exit 0 — a green gate that checked nothing.
-      - name: Verify lint libraries were built
         shell: bash
         env:
           DYLINT_LIBRARY_PATH: /tmp/dylint-lints/target/release
@@ -628,21 +624,24 @@ jobs:
           shopt -s nullglob
           # dylint only loads files named lib<name>@<toolchain>.so; a bare lib<name>.so is invisible to it.
           libs=("$DYLINT_LIBRARY_PATH"/lib*@*.so)
-          shopt -u nullglob
           if [[ ${#libs[@]} -eq 0 ]]; then
-            echo "::error::No dylint libraries in $DYLINT_LIBRARY_PATH — cargo dylint would load zero lints and pass. Bust the dylint-lints cache or check solana-lints-ref."
+            # --workspace: the repo root is itself a package, so a bare build skips the lints/* cdylibs
+            cargo build --release --workspace
+            libs=("$DYLINT_LIBRARY_PATH"/lib*@*.so)
+          fi
+          if [[ ${#libs[@]} -eq 0 ]]; then
+            echo "::error::No dylint libraries in $DYLINT_LIBRARY_PATH after building — check solana-lints-ref."
             exit 1
           fi
           printf 'loaded %d lint library(ies):\n' "${#libs[@]}"
           printf '  %s\n' "${libs[@]##*/}"
 
-      # Saving after the check, not via actions/cache, is what keeps a failed build from caching an empty target dir that later runs restore into a zero-lint pass.
       - name: Save built lint libraries
         if: steps.lints-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/dylint-lints/target/release
-          key: dylint-lints-v2-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ steps.lints-checkout.outputs.sha }}
+          key: dylint-lints-v3-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ steps.lints-checkout.outputs.sha }}
 
       - name: Run dylint
         env:
