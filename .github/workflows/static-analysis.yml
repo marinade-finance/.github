@@ -231,7 +231,7 @@ jobs:
           if [[ -f Cargo.lock ]] && grep -qE '^name = "(prost-build|tonic-build)"' Cargo.lock; then
             echo "prost-build/tonic-build detected in Cargo.lock — installing protobuf-compiler"
             sudo apt-get update
-            sudo apt-get install -y --no-install-recommends protobuf-compiler
+            sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
           fi
 
       # A build script that compiles .proto files needs them present; checkout
@@ -537,7 +537,7 @@ jobs:
           if [[ -f Cargo.lock ]] && grep -qE '^name = "(prost-build|tonic-build)"' Cargo.lock; then
             echo "prost-build/tonic-build detected in Cargo.lock — installing protobuf-compiler"
             sudo apt-get update
-            sudo apt-get install -y --no-install-recommends protobuf-compiler
+            sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
           fi
 
       # A build script that compiles .proto files needs them present; checkout
