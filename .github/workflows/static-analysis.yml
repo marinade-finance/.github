@@ -494,6 +494,10 @@ jobs:
     needs: detect
     if: needs.detect.outputs.has-anchor == 'true'
     runs-on: ubuntu-24.04
+    env:
+      # dylint builds its driver from a generated manifest that resolves to the newest crates.io
+      # versions, which now exceed the MSRV of the older nightlies some repos pin.
+      CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
     defaults:
       run:
         working-directory: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
