@@ -215,6 +215,27 @@ jobs:
             sudo apt-get install -y --no-install-recommends libclang-dev
           fi
 
+      - name: Install protoc for prost/tonic build scripts (if used)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f Cargo.lock ]] && grep -qE '^name = "(prost-build|tonic-build)"' Cargo.lock; then
+            echo "prost-build/tonic-build detected in Cargo.lock — installing protobuf-compiler"
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends protobuf-compiler
+          fi
+
+      # A build script that compiles .proto files needs them present; checkout
+      # does not fetch submodules, so tx-svc's jito_protos/protos is empty and
+      # its build.rs fails before clippy sees any Rust.
+      - name: Check out submodules (if any)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f .gitmodules ]]; then
+            git submodule update --init --recursive --depth 1
+          fi
+
       - name: Install libudev for hidapi (if used)
         shell: bash
         run: |
@@ -462,6 +483,27 @@ jobs:
             echo "clang-sys detected in Cargo.lock — installing libclang-dev"
             sudo apt-get update
             sudo apt-get install -y --no-install-recommends libclang-dev
+          fi
+
+      - name: Install protoc for prost/tonic build scripts (if used)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f Cargo.lock ]] && grep -qE '^name = "(prost-build|tonic-build)"' Cargo.lock; then
+            echo "prost-build/tonic-build detected in Cargo.lock — installing protobuf-compiler"
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends protobuf-compiler
+          fi
+
+      # A build script that compiles .proto files needs them present; checkout
+      # does not fetch submodules, so tx-svc's jito_protos/protos is empty and
+      # its build.rs fails before clippy sees any Rust.
+      - name: Check out submodules (if any)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f .gitmodules ]]; then
+            git submodule update --init --recursive --depth 1
           fi
 
       - name: Install libudev for hidapi (if used)
