@@ -82,7 +82,7 @@ allow = [
   "CDLA-Permissive-2.0",
   # libbz2-rs-sys, the default backend of bzip2 0.6 (agave-snapshots 4.x).
   "bzip2-1.0.6",
-  # Strong copyleft. All three spellings, because an allow entry matches the exact SPDX id a crate declares.
+  # Strong copyleft; yellowstone-fumarole-client declares the deprecated bare id, hence all three spellings.
   "AGPL-3.0",
   "AGPL-3.0-only",
   "AGPL-3.0-or-later",
