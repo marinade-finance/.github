@@ -13,9 +13,14 @@ ignore = [
   "RUSTSEC-2024-0344",
   "RUSTSEC-2022-0093",
 
+  # h2 0.3 queues empty DATA frames without limit. Patched only in 0.4.16, which needs hyper 1.x;
+  # hyper 0.14 is pinned by solana-client <=2.1 and reqwest 0.11. Reached as a client only — axum 0.6
+  # builds hyper without `http2`, so no HTTP/2 server surface. RETIRE when no repo resolves h2 below 0.4.16.
+  "RUSTSEC-2026-0258",
+
   # patched = [] in the advisory DB: no release will ever fix these, and all four
   # are informational = "unmaintained" rather than vulnerabilities. Ignoring them
-  # blinds nothing, unlike h2 0.3 / ring 0.16 / quinn-proto 0.8 / rustls 0.20 /
+  # blinds nothing, unlike ring 0.16 / quinn-proto 0.8 / rustls 0.20 /
   # tungstenite 0.17 / borsh 0.9, which all have reachable fixes and stay enforced.
   # bincode 1.x is solana-sdk's wire format; im/bitmaps/sized-chunks come via
   # solana-runtime and their upstreams are archived.
