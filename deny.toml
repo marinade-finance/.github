@@ -13,9 +13,14 @@ ignore = [
   "RUSTSEC-2024-0344",
   "RUSTSEC-2022-0093",
 
-  # h2 0.3 queues empty DATA frames without limit. Patched only in 0.4.16, which needs hyper 1.x;
-  # hyper 0.14 is pinned by solana-client <=2.1 and reqwest 0.11. Reached as a client only — axum 0.6
-  # builds hyper without `http2`, so no HTTP/2 server surface. RETIRE when no repo resolves h2 below 0.4.16.
+  # h2 0.3 queues empty DATA frames without limit. `patched = [">= 0.4.16"]` covers no 0.3 release, so
+  # the 0.3 line cannot be fixed in range; it needs hyper 1.x via reqwest 0.12, which needs solana
+  # >= 2.3 (GEN-8777). Reached as a client only — axum 0.6 builds hyper without `http2`, so no HTTP/2
+  # server surface. Since this ignore is version-blind it also forgives 0.4.4-0.4.15, which IS an
+  # in-range bump; the repos that had one have been bumped rather than left to this entry.
+  # RETIRE: with the last of marcrank, marinade-common-rs-cli, solana-randomness-registry,
+  # solana-transaction-builder, tx-svc, validator-manager, stake-liquidator, staking-rewards,
+  # validator-bonds — the nine still on h2 0.3.
   "RUSTSEC-2026-0258",
 
   # patched = [] in the advisory DB: no release will ever fix these, and all four
