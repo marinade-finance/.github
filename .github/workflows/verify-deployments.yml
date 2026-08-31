@@ -304,9 +304,15 @@ jobs:
             [[ -n "$local_hash" ]] && local_short="\`$(short "$local_hash")\`"
 
             url=$(cluster_url "$cluster")
-            if [[ -z "$url" ]]; then
+            if [[ "$cluster" == "localnet" ]]; then
               status="⏭ skipped (localnet)"
               on_chain_short="—"
+            elif [[ -z "$url" ]]; then
+              # Keyed on the cluster, not the URL: an unset vars.*_RPC_URL must not read as localnet.
+              status="❌ no RPC URL for \`$cluster\`"
+              on_chain_short="—"
+              echo "::error::No RPC URL for cluster '$cluster' — set the ${cluster}-rpc-url input (or its vars.* source). Treating as unverified."
+              unverified=$((unverified + 1))
             elif [[ -z "$local_hash" ]]; then
               status="❌ no built artifact named \`$name.so\`"
               on_chain_short="—"
