@@ -87,6 +87,11 @@ allow = [
   "CDLA-Permissive-2.0",
   # libbz2-rs-sys, the default backend of bzip2 0.6 (agave-snapshots 4.x).
   "bzip2-1.0.6",
+  # Not SPDX: Apache-2.0 plus clause 4(c), forbidding modification of the work into a "Competitive
+  # Product". A use restriction, so it cannot honestly be spelled Apache-2.0. Reached only through
+  # mpl-token-metadata (solana-snapshot-parser, validator-bonds), which we consume unmodified.
+  # RETIRE when Metaplex relicenses or the dependency is dropped.
+  "LicenseRef-Metaplex-NFT-OSL-1.0",
 ]
 exceptions = [
   # The OpenSSL license is acceptable only for the BoringSSL-derived shims in ring 0.16 (9 repos). RETIRE with the clarify entry below.
@@ -102,11 +107,12 @@ crate = "ring:<0.17.9"
 expression = "MIT AND ISC AND OpenSSL"
 license-files = []
 
-# mpl-token-metadata 5.x ships no `license` field despite being Apache-2.0 (solana-snapshot-parser, validator-bonds). RETIRE when Metaplex adds the field upstream.
+# mpl-token-metadata 5.x ships no `license` field, only `license-file`. The hash pins the LICENSE
+# text this override was read against, so the override dies if Metaplex changes the terms.
 [[licenses.clarify]]
 crate = "mpl-token-metadata"
-expression = "Apache-2.0"
-license-files = []
+expression = "LicenseRef-Metaplex-NFT-OSL-1.0"
+license-files = [{ path = "LICENSE", hash = 0xd3dacb8e }]
 
 # Stricter than the "warn" default and the only thing keeping an arbitrary git dependency out of the fleet; it suppresses no finding.
 [sources]
