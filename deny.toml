@@ -50,9 +50,8 @@ ignore = [
   { crate = "spl-transfer-hook-interface@0.5.1", reason = "bad solana-program <=2 range; pinned by spl-token-2022 2.0.2, no in-range alternative" },
   { crate = "spl-associated-token-account@2.3.1", reason = "bad solana-program <=2 range; downgrading forces a semver-major spl-token-2022 2.0.2 -> 1.0.0" },
 
-  # liquid-staking-referral-program only, both pinned by anchor 0.14 / solana-program =1.7.11.
+  # liquid-staking-referral-program only, pinned by anchor 0.14 / solana-program =1.7.11.
   # RETIRE: when that program leaves anchor 0.14.
-  { crate = "ahash@0.4.7", reason = "bulk yank of ahash <=0.8.3 for the AES key-recovery weakness; no non-yanked 0.4.x exists and hashbrown 0.9.1 requires ^0.4.4. Not reachable on BPF, which has no AES-NI" },
   { crate = "anchor-lang@0.14.0", reason = "administrative bulk yank of every anchor-lang <=0.24.1 (coral-xyz/anchor#1816) with no published reason; no non-yanked version satisfies ^0.14.0" },
 ]
 
