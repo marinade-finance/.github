@@ -87,13 +87,14 @@ allow = [
   "CDLA-Permissive-2.0",
   # libbz2-rs-sys, the default backend of bzip2 0.6 (agave-snapshots 4.x).
   "bzip2-1.0.6",
-  # Strong copyleft; yellowstone-fumarole-client declares the deprecated bare id, hence all three spellings.
-  "AGPL-3.0",
-  "AGPL-3.0-only",
-  "AGPL-3.0-or-later",
 ]
-# The OpenSSL license is acceptable only for the BoringSSL-derived shims in ring 0.16 (9 repos). RETIRE with the clarify entry below.
-exceptions = [{ crate = "ring", allow = ["OpenSSL"] }]
+exceptions = [
+  # The OpenSSL license is acceptable only for the BoringSSL-derived shims in ring 0.16 (9 repos). RETIRE with the clarify entry below.
+  { crate = "ring", allow = ["OpenSSL"] },
+  # Strong copyleft, scoped to the one crate that needs it (solana-program-accounts). 0.7.0 declares
+  # the deprecated bare id. RETIRE when the fumarole client is dropped or relicensed.
+  { crate = "yellowstone-fumarole-client", allow = ["AGPL-3.0"] },
+]
 
 # ring <0.17 declares only `license-file`, which cargo-deny cannot resolve; >=0.17.9 declares its own SPDX expression. RETIRE when no repo resolves ring below 0.17.9.
 [[licenses.clarify]]
