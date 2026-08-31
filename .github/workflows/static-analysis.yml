@@ -475,9 +475,17 @@ jobs:
             exit 0
           fi
 
+          # X-Ray's summary block (pkg/reporter/reporter.go showSummary) is either the literal
+          # "No issues detected" or one `%2d <category> issues` line per non-zero category, repeated
+          # per executable. Matching those three categories exactly avoids both directions of error:
+          # a severity-word heuristic neither fires on this output nor stays clear of `Critical: 0`.
           FINDINGS=$(printf '%s\n' "$SUMMARY" \
-            | grep -nEi '(critical|high|medium|low)[[:space:]]*(severity|:)|severity[[:space:]]*[:=]|^[[:space:]]*[0-9]+\.[[:space:]]*[A-Za-z]' \
+            | grep -nE '^[[:space:]]*[0-9]+[[:space:]]+(untrustful account|unsafe operation|cosplay account) issues[[:space:]]*$' \
             || true)
+
+          if [[ -z "$FINDINGS" ]] && ! printf '%s\n' "$SUMMARY" | grep -q 'No issues detected'; then
+            echo "::warning::X-Ray's summary matched neither 'No issues detected' nor a known issue-count line — its output format may have changed, so findings cannot be detected. Check the log and the xray-version input."
+          fi
 
           if [[ -n "$FINDINGS" ]]; then
             while IFS= read -r line; do
