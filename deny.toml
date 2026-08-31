@@ -30,8 +30,9 @@ ignore = [
   "RUSTSEC-2026-0248",
   "RUSTSEC-2026-0251",
 
-  # Yanked crates, reviewed one by one. A crate-spec entry is version-scoped, so each
-  # stops matching the moment the resolved version moves — that is the retirement signal.
+  # Yanked crates, reviewed one by one. `name@version` is an exact match, so each entry stops
+  # matching the moment the resolved version moves — that is the retirement signal. `name:version`
+  # would be a semver *requirement* and would forgive the whole compatible range instead.
   # Anything yanked for a defect, or fixable by an in-range bump, is NOT listed here.
 
   # SPL patch releases yanked only for shipping `solana-program = ">=1.17.17,<=2"`, which
@@ -39,20 +40,20 @@ ignore = [
   # PR #6182, issue #6897, reverted in cc8991ca/d69c56a3). No code change: 2.3.0 vs 2.3.1 and
   # 0.1.0 vs 0.1.1 differ only in Cargo.toml. Reached only under spl-token-2022 1.0/2.0.
   # RETIRE: all nine, once every repo is off the solana 1.17/1.18 line.
-  { crate = "spl-discriminator:0.1.1", reason = "bad solana-program <=2 range, no code defect" },
-  { crate = "spl-pod:0.1.1", reason = "bad solana-program <=2 range, no code defect" },
-  { crate = "spl-program-error:0.3.1", reason = "bad solana-program <=2 range, no code defect" },
-  { crate = "spl-tlv-account-resolution:0.5.2", reason = "bad solana-program <=2 range, no code defect" },
-  { crate = "spl-type-length-value:0.3.1", reason = "bad solana-program <=2 range, no code defect" },
-  { crate = "spl-token-group-interface:0.1.1", reason = "bad solana-program <=2 range; 0.1.0 differs only in Cargo.toml/README" },
-  { crate = "spl-token-metadata-interface:0.2.1", reason = "bad solana-program <=2 range, no code defect" },
-  { crate = "spl-transfer-hook-interface:0.5.1", reason = "bad solana-program <=2 range; pinned by spl-token-2022 2.0.2, no in-range alternative" },
-  { crate = "spl-associated-token-account:2.3.1", reason = "bad solana-program <=2 range; downgrading forces a semver-major spl-token-2022 2.0.2 -> 1.0.0" },
+  { crate = "spl-discriminator@0.1.1", reason = "bad solana-program <=2 range, no code defect" },
+  { crate = "spl-pod@0.1.1", reason = "bad solana-program <=2 range, no code defect" },
+  { crate = "spl-program-error@0.3.1", reason = "bad solana-program <=2 range, no code defect" },
+  { crate = "spl-tlv-account-resolution@0.5.2", reason = "bad solana-program <=2 range, no code defect" },
+  { crate = "spl-type-length-value@0.3.1", reason = "bad solana-program <=2 range, no code defect" },
+  { crate = "spl-token-group-interface@0.1.1", reason = "bad solana-program <=2 range; 0.1.0 differs only in Cargo.toml/README" },
+  { crate = "spl-token-metadata-interface@0.2.1", reason = "bad solana-program <=2 range, no code defect" },
+  { crate = "spl-transfer-hook-interface@0.5.1", reason = "bad solana-program <=2 range; pinned by spl-token-2022 2.0.2, no in-range alternative" },
+  { crate = "spl-associated-token-account@2.3.1", reason = "bad solana-program <=2 range; downgrading forces a semver-major spl-token-2022 2.0.2 -> 1.0.0" },
 
   # liquid-staking-referral-program only, both pinned by anchor 0.14 / solana-program =1.7.11.
   # RETIRE: when that program leaves anchor 0.14.
-  { crate = "ahash:0.4.7", reason = "bulk yank of ahash <=0.8.3 for the AES key-recovery weakness; no non-yanked 0.4.x exists and hashbrown 0.9.1 requires ^0.4.4. Not reachable on BPF, which has no AES-NI" },
-  { crate = "anchor-lang:0.14.0", reason = "administrative bulk yank of every anchor-lang <=0.24.1 (coral-xyz/anchor#1816) with no published reason; no non-yanked version satisfies ^0.14.0" },
+  { crate = "ahash@0.4.7", reason = "bulk yank of ahash <=0.8.3 for the AES key-recovery weakness; no non-yanked 0.4.x exists and hashbrown 0.9.1 requires ^0.4.4. Not reachable on BPF, which has no AES-NI" },
+  { crate = "anchor-lang@0.14.0", reason = "administrative bulk yank of every anchor-lang <=0.24.1 (coral-xyz/anchor#1816) with no published reason; no non-yanked version satisfies ^0.14.0" },
 ]
 
 # A yanked crate is an error, not a warning: the exceptions above are reviewed and version-scoped.
