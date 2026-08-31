@@ -483,8 +483,19 @@ jobs:
             | grep -nE '^[[:space:]]*[0-9]+[[:space:]]+(untrustful account|unsafe operation|cosplay account) issues[[:space:]]*$' \
             || true)
 
-          if [[ -z "$FINDINGS" ]] && ! printf '%s\n' "$SUMMARY" | grep -q 'No issues detected'; then
-            echo "::warning::X-Ray's summary matched neither 'No issues detected' nor a known issue-count line — its output format may have changed, so findings cannot be detected. Check the log and the xray-version input."
+          # Per line, not per summary: a clean block for one program must not vouch for an
+          # unrecognised line under another.
+          UNRECOGNISED=$(printf '%s\n' "$SUMMARY" \
+            | grep -vE '^([[:space:]]*|-+The summary of potential vulnerabilities in .*-+)$' \
+            | grep -vE '^[[:space:]]+No issues detected[[:space:]]*$' \
+            | grep -vE '^[[:space:]]*[0-9]+[[:space:]]+(untrustful account|unsafe operation|cosplay account) issues[[:space:]]*$' \
+            || true)
+
+          if [[ -n "$UNRECOGNISED" ]]; then
+            echo "::warning::X-Ray's summary has lines matching neither 'No issues detected' nor a known issue-count line — its output format may have changed, so findings cannot be reliably detected. Check the log and the xray-version input."
+            while IFS= read -r line; do
+              echo "::warning::X-Ray (unrecognised): $line"
+            done <<< "$UNRECOGNISED"
           fi
 
           if [[ -n "$FINDINGS" ]]; then
