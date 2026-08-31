@@ -629,9 +629,13 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/dylint-lints/target/release
-          key: dylint-lints-v3-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ steps.lints-checkout.outputs.sha }}
+          # Cache entries are immutable, so a run-unique key plus a prefix restore is the only way
+          # an entry that turns out to hold no libraries can ever be superseded: the next rebuild
+          # writes a new key, and the prefix match then resolves to it instead.
+          key: dylint-lints-v4-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ steps.lints-checkout.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: dylint-lints-v4-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ steps.lints-checkout.outputs.sha }}-
 
-      # A cache hit that restores no libraries rebuilds rather than fails: dylint would
+      # A restore that yields no libraries rebuilds rather than fails: dylint would
       # otherwise load zero lints and exit 0 — a green gate that checked nothing.
       - name: Build lints
         id: build-lints
@@ -639,8 +643,7 @@ jobs:
         shell: bash
         env:
           DYLINT_LIBRARY_PATH: /tmp/dylint-lints/target/release
-          CACHE_HIT: ${{ steps.lints-cache.outputs.cache-hit }}
-          CACHE_KEY: dylint-lints-v3-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ steps.lints-checkout.outputs.sha }}
+          MATCHED_KEY: ${{ steps.lints-cache.outputs.cache-matched-key }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -648,32 +651,30 @@ jobs:
           libs=("$DYLINT_LIBRARY_PATH"/lib*@*.so)
           rebuilt=false
           if [[ ${#libs[@]} -eq 0 ]]; then
-            if [[ "$CACHE_HIT" == "true" ]]; then
-              echo "::warning::Cache key $CACHE_KEY restored no lib*@*.so. Actions cache keys are immutable, so the save below cannot replace it — every run on this lints SHA will rebuild until the entry is deleted from the repository's cache."
+            if [[ -n "$MATCHED_KEY" ]]; then
+              echo "::warning::Cache entry $MATCHED_KEY restored no lib*@*.so; rebuilding and saving under a fresh key."
             fi
             # --workspace: the repo root is itself a package, so a bare build skips the lints/* cdylibs
             cargo build --release --workspace
             libs=("$DYLINT_LIBRARY_PATH"/lib*@*.so)
             rebuilt=true
           fi
-          echo "rebuilt=$rebuilt" >> "$GITHUB_OUTPUT"
           if [[ ${#libs[@]} -eq 0 ]]; then
             echo "::error::No dylint libraries in $DYLINT_LIBRARY_PATH after building — check solana-lints-ref."
             exit 1
           fi
+          echo "rebuilt=$rebuilt" >> "$GITHUB_OUTPUT"
           printf 'loaded %d lint library(ies):\n' "${#libs[@]}"
           printf '  %s\n' "${libs[@]##*/}"
 
-      # Keyed on whether a build actually ran, not on the restore: a hit that produced no libraries
-      # still has something worth saving. A duplicate key is a warning inside the action, hence
-      # continue-on-error rather than a gate that would skip the save.
+      # Keyed on whether a build actually ran, not on the restore: the path this exists for is a
+      # restore that hit and yielded nothing, which the old cache-hit gate skipped.
       - name: Save built lint libraries
         if: steps.build-lints.outputs.rebuilt == 'true'
-        continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/dylint-lints/target/release
-          key: dylint-lints-v3-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ steps.lints-checkout.outputs.sha }}
+          key: ${{ steps.lints-cache.outputs.cache-primary-key }}
 
       - name: Run dylint
         env:
