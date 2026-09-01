@@ -161,7 +161,7 @@ jobs:
 | `verify-onchain` | `true` | Compare the built hash against deployed bytecode; fails on mismatch |
 | `programs-section` | `mainnet` | Which `[programs.<cluster>]` table to read IDs from |
 | `program-ids` | — | Override the IDs instead of reading `Anchor.toml` |
-| `rpc-url` | mainnet-beta | RPC endpoint for fetching deployed bytecode |
+| `rpc-url` | `https://api.mainnet-beta.solana.com` | RPC endpoint for fetching deployed bytecode |
 | `fail-on-mismatch` | `true` | Set false to report without failing |
 | `anchor-workspace` | `.` | Anchor workspace root |
 | `artifact-retention-days` | `90` | Retention for the uploaded `.so` |
@@ -187,7 +187,7 @@ Measured against each repo's real `Cargo.lock` and mainnet deployment.
 
 ## Verify deployments (manual)
 
-A separate manually-triggered reusable workflow (`verify-deployments.yml`) builds the program(s) verifiably and compares the resulting hash against every cluster declared in `Anchor.toml`'s `[programs.<cluster>]` sections. Results are rendered as a per-cluster status matrix in the run summary (✅ match / ❌ mismatch / ❌ could not read deployed bytecode / ⏭ skipped (localnet)).
+A separate manually-triggered reusable workflow (`verify-deployments.yml`) builds the program(s) verifiably and compares the resulting hash against every cluster declared in `Anchor.toml`'s `[programs.<cluster>]` sections. Results are rendered as a per-cluster status matrix in the run summary: ✅ match, ❌ mismatch, ❌ could not read deployed bytecode, ❌ no RPC URL for the cluster, ❌ no built artifact of that name, ⏭ skipped (localnet).
 
 Add a thin wrapper in any Anchor consumer repo:
 
@@ -202,7 +202,7 @@ jobs:
       library-name: my-program   # required unless every workspace member is SBF-buildable
 ```
 
-Then trigger it from the **Actions** tab. RPC URLs default to the public Solana endpoints (`https://api.mainnet-beta.solana.com` and the devnet/testnet equivalents) rather than CLI monikers, so resolution never depends on a Solana CLI config on the runner; override per-cluster via the `mainnet-rpc-url` / `devnet-rpc-url` / `testnet-rpc-url` inputs if you need a private RPC. `[programs.localnet]` entries are skipped (no deployment to compare against).
+Then trigger it from the **Actions** tab. RPC URLs default to the public Solana endpoints (`https://api.mainnet-beta.solana.com` and the devnet/testnet equivalents) rather than CLI monikers, so resolution never depends on a Solana CLI config on the runner; override per-cluster via the `mainnet-rpc-url` / `devnet-rpc-url` / `testnet-rpc-url` inputs if you need a private RPC. `[programs.localnet]` entries are skipped (no deployment to compare against) — but a repo declaring *only* `[programs.localnet]` has nothing to verify at all, and `require-programs-section` defaults to true, so this job hard-fails there. Those repos want `require-programs-section: false`; see the On-chain verification column above.
 
 `fail-on-mismatch` defaults to true, but only the clusters in `blocking-clusters` (default `mainnet mainnet-beta`) can fail the job. One local build cannot match two clusters holding different deployments, so a repo declaring the same program under both mainnet and devnet would otherwise be permanently red. Non-blocking clusters are still reported in the summary. Set `blocking-clusters: "*"` to gate on all of them, or `fail-on-mismatch: false` to observe drift without blocking anywhere.
 

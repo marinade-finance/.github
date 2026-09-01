@@ -315,15 +315,43 @@ jobs:
             echo "| --- | --- | --- | --- | --- | --- |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # A cluster outside BLOCKING_CLUSTERS is still reported, it just cannot fail the job.
+          # read -ra, not an unquoted expansion: the latter glob-expands the value against the
+          # workspace, so a stray `*` would silently pull in files named after a cluster.
+          read -ra blocking_list <<< "$BLOCKING_CLUSTERS"
+
+          # A cluster outside the list is still reported, it just cannot fail the job. Canonicalised
+          # the same way cluster_url aliases them, so `blocking-clusters: mainnet` also gates a repo
+          # whose Anchor.toml says [programs.mainnet-beta].
+          canonical_cluster() {
+            case "$1" in
+              mainnet|mainnet-beta) echo "mainnet" ;;
+              *)                    echo "$1" ;;
+            esac
+          }
+
           blocking_cluster() {
             [[ "$BLOCKING_CLUSTERS" == "*" ]] && return 0
-            local c
-            for c in $BLOCKING_CLUSTERS; do
-              [[ "$c" == "$1" ]] && return 0
+            local c want
+            want=$(canonical_cluster "$1")
+            for c in "${blocking_list[@]}"; do
+              [[ "$(canonical_cluster "$c")" == "$want" ]] && return 0
             done
             return 1
           }
+
+          # A list that gates nothing silently disables the check, so say so up front rather than
+          # only when drift happens to appear.
+          if [[ "$BLOCKING_CLUSTERS" != "*" ]]; then
+            gated=0
+            for entry in "${entries[@]}"; do
+              IFS=$'\t' read -r c _n _p <<< "$entry"
+              [[ "$c" == "localnet" ]] && continue
+              blocking_cluster "$c" && gated=$((gated + 1))
+            done
+            if [[ $gated -eq 0 ]]; then
+              echo "::warning::blocking-clusters ('$BLOCKING_CLUSTERS') matches none of the non-localnet clusters this Anchor.toml declares, so no mismatch can fail this job. Expected a space-separated list of cluster names, or '*' for all."
+            fi
+          fi
 
           unverified=0
           blocking=0
