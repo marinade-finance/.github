@@ -207,8 +207,21 @@ jobs:
           if [[ -n "$LIBRARY_NAME" ]]; then
             args+=(--library-name "$LIBRARY_NAME")
           fi
-          if [[ -n "$CARGO_ARGS" ]]; then
-            mapfile -t extra < <(printf '%s' "$CARGO_ARGS" | xargs -n1 printf '%s\n')
+          if [[ -n "${CARGO_ARGS//[[:space:]]/}" ]]; then
+            # Via a file, not process substitution: the latter hides xargs' exit status, so a
+            # malformed value (an unmatched quote, say) silently became an empty argv and the
+            # build ran without the args it needs.
+            ARGS_FILE="${RUNNER_TEMP:-/tmp}/cargo-args"
+            if ! printf '%s' "$CARGO_ARGS" | xargs -n1 printf '%s\n' > "$ARGS_FILE"; then
+              echo "::error::Could not parse the cargo-args input: $CARGO_ARGS — check for an unmatched quote. Expected shell-style words, e.g. --config env.GIT_REV=abc1234"
+              exit 1
+            fi
+            # mapfile, not `read -a`: `read` stops at the first newline and would drop every later argument.
+            mapfile -t extra < "$ARGS_FILE"
+            if [[ ${#extra[@]} -eq 0 ]]; then
+              echo "::error::The cargo-args input ($CARGO_ARGS) parsed to no arguments."
+              exit 1
+            fi
             args+=(-- "${extra[@]}")
           fi
           echo "solana-verify build ${args[*]}"
