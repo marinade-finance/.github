@@ -78,10 +78,22 @@ on:
         description: >-
           Fail the job when a built hash differs from the deployed hash, when a
           declared program produced no artifact, or when a deployed hash could not
-          be read. Set false only to observe drift without blocking.
+          be read. Set false only to observe drift without blocking. Only the
+          clusters named in `blocking-clusters` can fail the job.
         required: false
         default: true
         type: boolean
+      blocking-clusters:
+        description: >-
+          Space-separated clusters whose unverified deployments fail the job when
+          `fail-on-mismatch` is true. One local build cannot match two clusters
+          holding different deployments, so a repo declaring the same program under
+          several clusters would otherwise be permanently red. Every cluster is
+          still reported in the run summary; the ones outside this list are
+          advisory. Set to `*` to gate on all of them.
+        required: false
+        default: "mainnet mainnet-beta"
+        type: string
 
 jobs:
   verify:
@@ -210,6 +222,7 @@ jobs:
           BASE_IMAGE: ${{ steps.image.outputs.base-image }}
           REQUIRE_PROGRAMS_SECTION: ${{ inputs.require-programs-section }}
           FAIL_ON_MISMATCH: ${{ inputs.fail-on-mismatch }}
+          BLOCKING_CLUSTERS: ${{ inputs.blocking-clusters }}
           SOLANA_VERIFY_VERSION: ${{ inputs.solana-verify-version }}
         shell: bash
         run: |
@@ -302,7 +315,18 @@ jobs:
             echo "| --- | --- | --- | --- | --- | --- |"
           } >> "$GITHUB_STEP_SUMMARY"
 
+          # A cluster outside BLOCKING_CLUSTERS is still reported, it just cannot fail the job.
+          blocking_cluster() {
+            [[ "$BLOCKING_CLUSTERS" == "*" ]] && return 0
+            local c
+            for c in $BLOCKING_CLUSTERS; do
+              [[ "$c" == "$1" ]] && return 0
+            done
+            return 1
+          }
+
           unverified=0
+          blocking=0
           mismatches=0
           checked=0
           for entry in "${entries[@]}"; do
@@ -321,11 +345,13 @@ jobs:
               on_chain_short="—"
               echo "::error::No RPC URL for cluster '$cluster' — set the $(cluster_url_input "$cluster") input (or its vars.* source). Treating as unverified."
               unverified=$((unverified + 1))
+              blocking_cluster "$cluster" && blocking=$((blocking + 1))
             elif [[ -z "$local_hash" ]]; then
               status="❌ no built artifact named \`$name.so\`"
               on_chain_short="—"
               echo "::error::Anchor.toml [programs.$cluster] lists '$name' but the build produced no target/deploy/$name.so — check that the name matches the crate's [lib] name"
               unverified=$((unverified + 1))
+              blocking_cluster "$cluster" && blocking=$((blocking + 1))
             else
               # `tail -n1` drops the RPC client's retry notices; the `if` guard keeps a read failure from killing the summary.
               if on_chain_hash=$(solana-verify get-program-hash "$pubkey" --url "$url" 2>/dev/null | tail -n1) \
@@ -339,12 +365,14 @@ jobs:
                   echo "::error::$cluster/$name ($pubkey): built $local_hash but $on_chain_hash is deployed"
                   mismatches=$((mismatches + 1))
                   unverified=$((unverified + 1))
+                  blocking_cluster "$cluster" && blocking=$((blocking + 1))
                 fi
               else
                 status="❌ could not read deployed bytecode"
                 on_chain_short="—"
                 echo "::error::Could not read deployed bytecode for $cluster/$name ($pubkey) from $url — the program may not be deployed, or the RPC call failed. Treating as unverified."
                 unverified=$((unverified + 1))
+                blocking_cluster "$cluster" && blocking=$((blocking + 1))
               fi
             fi
 
@@ -355,15 +383,17 @@ jobs:
           {
             echo ""
             if [[ $unverified -gt 0 ]]; then
-              echo "**$unverified of $checkable declared deployment(s) unverified** ($mismatches outright mismatch(es)) — the on-chain bytecode was not shown to come from this ref."
+              echo "**$unverified of $checkable declared deployment(s) unverified** ($mismatches outright mismatch(es), $blocking on a blocking cluster) — the on-chain bytecode was not shown to come from this ref."
             else
               echo "All $checked checked deployment(s) match the verifiable build of the current ref."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [[ $unverified -gt 0 ]]; then
+          if [[ $blocking -gt 0 ]]; then
             if [[ "$FAIL_ON_MISMATCH" == "true" ]]; then
               exit 1
             fi
-            echo "::warning::$unverified deployment(s) unverified; not failing because fail-on-mismatch is false"
+            echo "::warning::$blocking deployment(s) unverified on a blocking cluster; not failing because fail-on-mismatch is false"
+          elif [[ $unverified -gt 0 ]]; then
+            echo "::warning::$unverified deployment(s) unverified, none on a blocking cluster ($BLOCKING_CLUSTERS); not failing"
           fi

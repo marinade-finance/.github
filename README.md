@@ -185,7 +185,7 @@ Measured against each repo's real `Cargo.lock` and mainnet deployment.
 
 ## Verify deployments (manual)
 
-A separate manually-triggered reusable workflow (`verify-deployments.yml`) builds the program(s) verifiably and compares the resulting hash against every cluster declared in `Anchor.toml`'s `[programs.<cluster>]` sections. Results are rendered as a per-cluster status matrix in the run summary (✅ match / ❌ mismatch / ⏸ not deployed).
+A separate manually-triggered reusable workflow (`verify-deployments.yml`) builds the program(s) verifiably and compares the resulting hash against every cluster declared in `Anchor.toml`'s `[programs.<cluster>]` sections. Results are rendered as a per-cluster status matrix in the run summary (✅ match / ❌ mismatch / ❌ could not read deployed bytecode / ⏭ skipped (localnet)).
 
 Add a thin wrapper in any Anchor consumer repo:
 
@@ -196,11 +196,13 @@ on:
 jobs:
   verify:
     uses: marinade-finance/.github/.github/workflows/verify-deployments.yml@main
+    with:
+      library-name: my-program   # required unless every workspace member is SBF-buildable
 ```
 
-Then trigger it from the **Actions** tab. RPC URLs default to public Solana cluster monikers (`mainnet-beta`, `devnet`, `testnet`); override per-cluster via the `mainnet-rpc-url` / `devnet-rpc-url` / `testnet-rpc-url` inputs if you need a private RPC. `[programs.localnet]` entries are skipped (no deployment to compare against).
+Then trigger it from the **Actions** tab. RPC URLs default to the public Solana endpoints (`https://api.mainnet-beta.solana.com` and the devnet/testnet equivalents) rather than CLI monikers, so resolution never depends on a Solana CLI config on the runner; override per-cluster via the `mainnet-rpc-url` / `devnet-rpc-url` / `testnet-rpc-url` inputs if you need a private RPC. `[programs.localnet]` entries are skipped (no deployment to compare against).
 
-The job does not fail on mismatch — by design, since the deployed program is often older than the default-branch HEAD.
+`fail-on-mismatch` defaults to true, but only the clusters in `blocking-clusters` (default `mainnet mainnet-beta`) can fail the job. One local build cannot match two clusters holding different deployments, so a repo declaring the same program under both mainnet and devnet would otherwise be permanently red. Non-blocking clusters are still reported in the summary. Set `blocking-clusters: "*"` to gate on all of them, or `fail-on-mismatch: false` to observe drift without blocking anywhere.
 
 ## Other workflows
 
