@@ -170,16 +170,18 @@ jobs:
 
 Measured against each repo's real `Cargo.lock` and mainnet deployment.
 
-| Repo | `library-name` | `base-image` | `solana-verify-version` | Tag trigger |
-| --- | --- | --- | --- | --- |
-| `validator-bonds` | `validator_bonds` | derived `2.3.0` | default | `contract-v*` |
-| `marinade-config` | `marinade_config` | **`4.0.3`** — 2.x/3.x images ship Rust 1.84, too old for its edition-2024 crates | **`0.4.11`** — produced the recorded hash | `v*` |
-| `distributor` | `merkle_distributor` | derived `2.3.0` | default | `v*` |
-| `native-staking` | `marinade_native_proxy` | derived `2.1.11` | default | `mainnet-*` |
-| `solana-randomness-registry` | `randomness_registry` | derived `2.2.1` | **`0.4.4`** — pinned by the workflow it replaced | `v*` |
-| `atomic-swap-contract` | `atomic_swap` | derived `2.3.0` | default | `v*` |
-| `liquid-staking-program` | `marinade_finance` | **none published** for its `1.15.2` lockfile | — | not adopting |
-| `directed-stake` | `directed_stake` | **none published** for its `1.15.2` lockfile | — | not adopting |
+| Repo | `library-name` | `base-image` | `solana-verify-version` | Tag trigger | On-chain verification |
+| --- | --- | --- | --- | --- | --- |
+| `validator-bonds` | `validator_bonds` | derived `2.3.0` | default | `contract-v*` | default (`[programs.mainnet]`) |
+| `marinade-config` | `marinade_config` | **`4.0.3`** — 2.x/3.x images ship Rust 1.84, too old for its edition-2024 crates | **`0.4.11`** — produced the recorded hash | `v*` | default (`[programs.mainnet]`) |
+| `distributor` | `merkle_distributor` | derived `2.3.0` | default | `v*` | default (`[programs.mainnet]`) |
+| `native-staking` | `marinade_native_proxy` | derived `2.1.11` | default | `mainnet-*` | **`verify-onchain: false`** — Anchor.toml declares only `[programs.localnet]` |
+| `solana-randomness-registry` | `randomness_registry` | derived `2.2.1` | **`0.4.4`** — pinned by the workflow it replaced | `v*` | **`verify-onchain: false`** — Anchor.toml declares only `[programs.localnet]` |
+| `atomic-swap-contract` | `atomic_swap` | derived `2.3.0` | default | `v*` | **`programs-section: devnet`** — Anchor.toml declares no `[programs.mainnet]` |
+| `liquid-staking-program` | `marinade_finance` | **none published** for its `1.15.2` lockfile | — | not adopting | — |
+| `directed-stake` | `directed_stake` | **none published** for its `1.15.2` lockfile | — | not adopting | — |
+
+`verify-onchain` defaults to true and fails rather than passing green when it can resolve no program IDs, so a repo whose `Anchor.toml` has no `[programs.mainnet]` must set one of the values above before the workflow can run. The error names which `[programs.*]` tables the repo does declare and which of the three remedies applies.
 
 `solana-verify` picks its image from the `solana-program` version in `Cargo.lock`, not `Anchor.toml`'s `solana_version`; those disagree in four of these repos, so the workflow resolves it, logs it, and passes `--base-image` explicitly.
 

@@ -262,7 +262,7 @@ jobs:
               echo ""
               echo "Anchor.toml declares no verifiable \`[programs.*]\` entries (only \`localnet\`, or none at all) — **nothing was verified.**"
               echo ""
-              echo "Add a \`[programs.mainnet]\` table naming the deployed program ID. See \`rollout/\` in marinade-finance/.github for the per-repo values."
+              echo "Add a \`[programs.mainnet]\` table naming the deployed program ID. See \"Per-repo values\" in marinade-finance/.github's README for the values in use."
             } >> "$GITHUB_STEP_SUMMARY"
             if [[ "$REQUIRE_PROGRAMS_SECTION" == "true" ]]; then
               echo "::error::Anchor.toml has no non-localnet [programs.*] entries, so nothing could be verified. Add [programs.mainnet], or set require-programs-section: false to acknowledge that this repo is unverified."

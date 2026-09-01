@@ -318,6 +318,7 @@ jobs:
           PY
           else
             echo "Program IDs read from Anchor.toml [programs.${PROGRAMS_SECTION}]."
+            export SECTIONS="${RUNNER_TEMP:-/tmp}/programs-sections.txt"
             python3 - > "$ENTRIES" <<'PY'
           import os, tomllib
           import sys
@@ -325,7 +326,13 @@ jobs:
           section = os.environ["PROGRAMS_SECTION"]
           with open("Anchor.toml", "rb") as f:
               data = tomllib.load(f)
-          table = data.get("programs", {}).get(section, {})
+          programs = data.get("programs", {})
+          # Recorded for the error path below, so it can name what the repo actually declares.
+          with open(os.environ["SECTIONS"], "w") as out:
+              for name, tbl in programs.items():
+                  if isinstance(tbl, dict) and tbl:
+                      out.write(name + "\n")
+          table = programs.get(section, {})
           if isinstance(table, dict):
               for name, pubkey in table.items():
                   if isinstance(pubkey, dict):
@@ -343,12 +350,27 @@ jobs:
 
           mapfile -t entries < "$ENTRIES"
           if [[ ${#entries[@]} -eq 0 ]]; then
-            echo "::error::No program IDs to verify against. Anchor.toml has no [programs.${PROGRAMS_SECTION}] table with program entries. Add one (see rollout/ in marinade-finance/.github), pass the program-ids input, or set verify-onchain: false to build without verifying."
+            declared=""
+            usable=""
+            if [[ -s "${SECTIONS:-/nonexistent}" ]]; then
+              declared=$(paste -sd' ' "$SECTIONS")
+              usable=$(grep -vx 'localnet' "$SECTIONS" | paste -sd' ' - || true)
+            fi
+            if [[ -z "$declared" ]]; then
+              remedy="Anchor.toml declares no [programs.*] table with entries at all. Add [programs.${PROGRAMS_SECTION}], pass the program-ids input, or set verify-onchain: false to build without verifying."
+            elif [[ -z "$usable" ]]; then
+              remedy="Anchor.toml declares only [programs.localnet], which has no deployment to compare against. This repo wants verify-onchain: false — the verifiable build still runs and its hashes are still reported."
+            else
+              remedy="Anchor.toml declares program IDs under: $usable. Set programs-section to one of those, add [programs.${PROGRAMS_SECTION}], pass the program-ids input, or set verify-onchain: false."
+            fi
+            echo "::error::No program IDs to verify against: no [programs.${PROGRAMS_SECTION}] table with program entries. $remedy"
             {
               echo ""
               echo "### On-chain verification"
               echo ""
               echo "**Failed: nothing to verify.** No \`[programs.${PROGRAMS_SECTION}]\` entries in Anchor.toml and no \`program-ids\` input."
+              echo ""
+              echo "$remedy"
             } >> "$GITHUB_STEP_SUMMARY"
             echo "verified=false" >> "$GITHUB_OUTPUT"
             exit 1
