@@ -61,9 +61,11 @@ ignore = [
 ]
 
 # A yanked crate is an error, not a warning: the exceptions above are reviewed and version-scoped.
-# solana_rbpf 0.8.0 is deliberately absent — it is pinned `=0.8.0` by solana-program-runtime and
-# carries RUSTSEC-2026-0191 (unsound, memory-corruption, patched = []) which cargo-deny 0.20.2 does
-# not report, so this is the only signal we get for it.
+# solana_rbpf 0.8.0 is deliberately absent, so solana-transaction-builder and tx-svc stay red on it:
+# it is pinned `=0.8.0` by solana-program-runtime 1.18 and carries RUSTSEC-2026-0191 (unsound,
+# memory-corruption, patched = []), and the pin is gone from the solana 2.3 tree, so this is
+# fixable. RUSTSEC-2026-0191 does surface under `unsound = "all"`; it is silent here only because
+# `unsound` defaults to workspace scope and solana_rbpf is transitive.
 yanked = "deny"
 
 # Allow list; copyleft entries are grouped at the end.
