@@ -1,16 +1,5 @@
 name: Verify deployments (reusable)
 
-# Manually-triggered reusable workflow. Builds programs verifiably with
-# `solana-verify`, then for every program declared under `[programs.<cluster>]`
-# in Anchor.toml, fetches the on-chain hash and compares.
-#
-# Consumers should wrap this in a workflow with `on: workflow_dispatch:`.
-
-# Cap the GITHUB_TOKEN at workflow scope to the minimum the job needs.
-# This workflow only reads code (verifiable build + RPC reads against
-# on-chain program hashes) and never writes to the repo or to any
-# protected resource. Setting permissions here overrides whatever the
-# caller granted.
 permissions:
   contents: read
 
@@ -27,38 +16,94 @@ on:
         required: false
         default: ""
         type: string
+      base-image:
+        description: >-
+          Full Docker image reference for the reproducible build, e.g.
+          "solanafoundation/solana-verifiable-build:2.3.0". Leave empty to derive it
+          from the `solana-program` version in Cargo.lock. Must match the value used
+          in verifiable-build.yml for the same repo, or the two workflows will
+          disagree about the hash.
+        required: false
+        default: ""
+        type: string
+      library-name:
+        description: >-
+          Crate whose .so to build, passed as `solana-verify build
+          --library-name`. REQUIRED for a workspace whose members are not all
+          SBF-buildable, which is most of them — without it solana-verify builds
+          from the workspace root and cargo resolves every member, failing on the
+          first CLI or client crate. Must match the value the repo's
+          verifiable-build caller passes, or the two workflows compare different
+          builds.
+        required: false
+        default: ""
+        type: string
+      cargo-args:
+        description: >-
+          Extra arguments appended after `--` to the cargo invocation inside the
+          build container, e.g. `--config env.GIT_REV=abc1234`. Must match the
+          repo's verifiable-build caller for the same reason as library-name.
+        required: false
+        default: ""
+        type: string
       solana-verify-version:
         description: "solana-verify CLI version to install"
         required: false
         default: "0.4.15"
         type: string
       mainnet-rpc-url:
-        description: "RPC URL or moniker for mainnet (Anchor.toml [programs.mainnet])"
+        description: "RPC URL for mainnet (Anchor.toml [programs.mainnet]). An explicit URL rather than a CLI moniker, so resolution never depends on a Solana CLI config file on the runner."
         required: false
-        default: "mainnet-beta"
+        default: "https://api.mainnet-beta.solana.com"
         type: string
       devnet-rpc-url:
-        description: "RPC URL or moniker for devnet"
+        description: "RPC URL for devnet"
         required: false
-        default: "devnet"
+        default: "https://api.devnet.solana.com"
         type: string
       testnet-rpc-url:
-        description: "RPC URL or moniker for testnet"
+        description: "RPC URL for testnet"
         required: false
-        default: "testnet"
+        default: "https://api.testnet.solana.com"
+        type: string
+      require-programs-section:
+        description: >-
+          Fail when Anchor.toml declares no non-localnet `[programs.*]` entries.
+          Defaults true: a repo with nothing to verify previously reported success,
+          which made "verified" indistinguishable from "never checked".
+        required: false
+        default: true
+        type: boolean
+      fail-on-mismatch:
+        description: >-
+          Fail the job when a built hash differs from the deployed hash, when a
+          declared program produced no artifact, or when a deployed hash could not
+          be read. Set false only to observe drift without blocking. Only the
+          clusters named in `blocking-clusters` can fail the job.
+        required: false
+        default: true
+        type: boolean
+      blocking-clusters:
+        description: >-
+          Space-separated clusters whose unverified deployments fail the job when
+          `fail-on-mismatch` is true. One local build cannot match two clusters
+          holding different deployments, so a repo declaring the same program under
+          several clusters would otherwise be permanently red. Every cluster is
+          still reported in the run summary; the ones outside this list are
+          advisory. Set to `*` to gate on all of them.
+        required: false
+        default: "mainnet mainnet-beta"
         type: string
 
 jobs:
   verify:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
     steps:
-      # `persist-credentials: false`: this job only reads code (verifiable
-      # build, compares on-chain hashes), never pushes. Drop the
-      # GITHUB_TOKEN that checkout would otherwise leave in `.git/config`
-      # so a downstream step or third-party build script can't use it.
+      # `persist-credentials: false`: this job never pushes, so no GITHUB_TOKEN is left in `.git/config` for a build script to reach.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
         with:
           persist-credentials: false
@@ -66,8 +111,6 @@ jobs:
       - name: Validate Anchor workspace
         env:
           ANCHOR_WORKSPACE: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
-        # Run from $GITHUB_WORKSPACE so this step doesn't itself fail with a
-        # cd error if the configured directory is missing.
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -77,6 +120,60 @@ jobs:
           fi
           if [[ ! -f "$ANCHOR_WORKSPACE/Anchor.toml" ]]; then
             echo "::error::Anchor.toml not found at '$ANCHOR_WORKSPACE/Anchor.toml'"
+            exit 1
+          fi
+          if [[ ! -f "$ANCHOR_WORKSPACE/Cargo.lock" ]]; then
+            echo "::error::Cargo.lock not found at '$ANCHOR_WORKSPACE/Cargo.lock' — a reproducible build requires a committed lockfile"
+            exit 1
+          fi
+
+      # solana-verify derives the image from Cargo.lock's solana-program pin, not Anchor.toml; resolve it here to make the choice visible and overridable.
+      - name: Resolve build image
+        id: image
+        shell: bash
+        env:
+          BASE_IMAGE_INPUT: ${{ inputs.base-image }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$BASE_IMAGE_INPUT" ]]; then
+            image="$BASE_IMAGE_INPUT"
+            echo "Using pinned base image from the base-image input."
+          else
+            versions="$(python3 - <<'PY'
+          import tomllib
+          with open("Cargo.lock", "rb") as f:
+              lock = tomllib.load(f)
+          seen = sorted({p["version"] for p in lock.get("package", []) if p.get("name") == "solana-program"})
+          print("\n".join(seen))
+          PY
+          )"
+            count=$(printf '%s\n' "$versions" | grep -c . || true)
+            if [[ "$count" -eq 0 ]]; then
+              echo "::error::Cargo.lock pins no solana-program version, so no build image can be derived. Set the base-image input explicitly."
+              exit 1
+            fi
+            if [[ "$count" -gt 1 ]]; then
+              echo "::error::Cargo.lock pins multiple solana-program versions ($(printf '%s' "$versions" | tr '\n' ' ')); image selection is ambiguous. Set the base-image input explicitly."
+              exit 1
+            fi
+            image="solanafoundation/solana-verifiable-build:${versions}"
+            echo "Derived base image from Cargo.lock solana-program ${versions}."
+          fi
+          echo "base-image=$image" >> "$GITHUB_OUTPUT"
+          echo "Base image: $image"
+
+      - name: Pull build image
+        shell: bash
+        env:
+          BASE_IMAGE: ${{ steps.image.outputs.base-image }}
+        run: |
+          set -euo pipefail
+          if ! docker manifest inspect "$BASE_IMAGE" > /dev/null 2>&1; then
+            echo "::error::No such image tag: '$BASE_IMAGE'. No verifiable-build image is published for that solana-program version. Set the base-image input to a published tag, or realign Cargo.lock onto a solana-program version that has one."
+            exit 1
+          fi
+          if ! docker pull "$BASE_IMAGE"; then
+            echo "::error::Image '$BASE_IMAGE' exists in the registry but could not be pulled. This is an infrastructure failure (disk space, registry rate limit, or network), not a repo misconfiguration — retry the run."
             exit 1
           fi
 
@@ -94,45 +191,97 @@ jobs:
       - name: Install solana-verify
         if: steps.cache-solana-verify.outputs.cache-hit != 'true'
         working-directory: ${{ github.workspace }}
-        run: cargo install --locked solana-verify --version ${{ inputs.solana-verify-version }}
+        shell: bash
+        env:
+          SOLANA_VERIFY_VERSION: ${{ inputs.solana-verify-version }}
+        run: cargo install --locked solana-verify --version "$SOLANA_VERIFY_VERSION"
 
       - name: Verifiable build
-        run: solana-verify build
+        env:
+          BASE_IMAGE: ${{ steps.image.outputs.base-image }}
+          LIBRARY_NAME: ${{ inputs.library-name }}
+          CARGO_ARGS: ${{ inputs.cargo-args }}
+        run: |
+          set -euo pipefail
+          args=(--base-image "$BASE_IMAGE")
+          if [[ -n "$LIBRARY_NAME" ]]; then
+            args+=(--library-name "$LIBRARY_NAME")
+          fi
+          if [[ -n "${CARGO_ARGS//[[:space:]]/}" ]]; then
+            # Via a file, not process substitution: the latter hides xargs' exit status, so a
+            # malformed value (an unmatched quote, say) silently became an empty argv and the
+            # build ran without the args it needs.
+            ARGS_FILE="${RUNNER_TEMP:-/tmp}/cargo-args"
+            if ! printf '%s' "$CARGO_ARGS" | xargs -n1 printf '%s\n' > "$ARGS_FILE"; then
+              echo "::error::Could not parse the cargo-args input: $CARGO_ARGS — check for an unmatched quote. Expected shell-style words, e.g. --config env.GIT_REV=abc1234"
+              exit 1
+            fi
+            # mapfile, not `read -a`: `read` stops at the first newline and would drop every later argument.
+            mapfile -t extra < "$ARGS_FILE"
+            if [[ ${#extra[@]} -eq 0 ]]; then
+              echo "::error::The cargo-args input ($CARGO_ARGS) parsed to no arguments."
+              exit 1
+            fi
+            args+=(-- "${extra[@]}")
+          fi
+          echo "solana-verify build ${args[*]}"
+          solana-verify build "${args[@]}"
 
       - name: Compare against on-chain deployments
         env:
           MAINNET_URL: ${{ inputs.mainnet-rpc-url }}
           DEVNET_URL: ${{ inputs.devnet-rpc-url }}
           TESTNET_URL: ${{ inputs.testnet-rpc-url }}
+          BASE_IMAGE: ${{ steps.image.outputs.base-image }}
+          REQUIRE_PROGRAMS_SECTION: ${{ inputs.require-programs-section }}
+          FAIL_ON_MISMATCH: ${{ inputs.fail-on-mismatch }}
+          BLOCKING_CLUSTERS: ${{ inputs.blocking-clusters }}
+          SOLANA_VERIFY_VERSION: ${{ inputs.solana-verify-version }}
         shell: bash
         run: |
           set -euo pipefail
 
-          # Emit one row per (cluster, program_name, program_id) from Anchor.toml.
-          # Redirect python3 output to a temp file (rather than using
-          # `mapfile -t entries < <(python3 ...)`) so a non-zero exit from
-          # tomllib — e.g., a malformed Anchor.toml — fails the step under
-          # `set -e`. With process substitution, the subshell's exit status
-          # isn't propagated and a parse error would silently degrade to
-          # "no [programs.*] sections" and a clean exit.
+          # Redirect to a file, not process substitution: the latter drops the exit status, turning a parse error into a silent "no [programs.*] sections".
           ENTRIES_FILE="${RUNNER_TEMP:-/tmp}/anchor-programs.tsv"
           python3 - > "$ENTRIES_FILE" <<'PY'
-          import tomllib
+          import sys, tomllib
           with open("Anchor.toml", "rb") as f:
               data = tomllib.load(f)
           for cluster, mapping in data.get("programs", {}).items():
               if not isinstance(mapping, dict):
                   continue
               for name, pubkey in mapping.items():
+                  if isinstance(pubkey, dict):
+                      pubkey = pubkey.get("address")
+                  if not isinstance(pubkey, str) or not pubkey:
+                      sys.stderr.write(
+                          f"::error::Anchor.toml [programs.{cluster}] entry '{name}' has no "
+                          "readable address; expected a string or a table with an `address` key\n"
+                      )
+                      sys.exit(1)
                   print(f"{cluster}\t{name}\t{pubkey}")
           PY
           mapfile -t entries < "$ENTRIES_FILE"
 
-          if [[ ${#entries[@]} -eq 0 ]]; then
-            echo "::warning::Anchor.toml has no [programs.*] sections to verify"
-            echo "## Verify deployments" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Anchor.toml has no \`[programs.*]\` sections — nothing to verify." >> "$GITHUB_STEP_SUMMARY"
+          checkable=0
+          for entry in "${entries[@]}"; do
+            IFS=$'\t' read -r cluster _name _pubkey <<< "$entry"
+            [[ "$cluster" == "localnet" ]] || checkable=$((checkable + 1))
+          done
+
+          if [[ $checkable -eq 0 ]]; then
+            {
+              echo "## Verify deployments"
+              echo ""
+              echo "Anchor.toml declares no verifiable \`[programs.*]\` entries (only \`localnet\`, or none at all) — **nothing was verified.**"
+              echo ""
+              echo "Add a \`[programs.mainnet]\` table naming the deployed program ID. See \"Per-repo values\" in marinade-finance/.github's README for the values in use."
+            } >> "$GITHUB_STEP_SUMMARY"
+            if [[ "$REQUIRE_PROGRAMS_SECTION" == "true" ]]; then
+              echo "::error::Anchor.toml has no non-localnet [programs.*] entries, so nothing could be verified. Add [programs.mainnet], or set require-programs-section: false to acknowledge that this repo is unverified."
+              exit 1
+            fi
+            echo "::warning::Nothing to verify; not failing because require-programs-section is false"
             exit 0
           fi
 
@@ -156,7 +305,15 @@ jobs:
               mainnet|mainnet-beta)  echo "$MAINNET_URL" ;;
               devnet)                echo "$DEVNET_URL" ;;
               testnet)               echo "$TESTNET_URL" ;;
-              *)                     echo "$1" ;;  # treat unknown as a literal URL/moniker
+              *)                     echo "$1" ;;
+            esac
+          }
+
+          # mainnet-beta is an alias, so naming the input needs the same mapping as the URL lookup.
+          cluster_url_input() {
+            case "$1" in
+              mainnet|mainnet-beta) echo "mainnet-rpc-url" ;;
+              *)                    echo "$1-rpc-url" ;;
             esac
           }
 
@@ -165,13 +322,54 @@ jobs:
           {
             echo "## Verify deployments"
             echo ""
-            echo "solana-verify \`${{ inputs.solana-verify-version }}\` — built at \`$(git rev-parse --short HEAD)\`"
+            echo "solana-verify \`${SOLANA_VERIFY_VERSION}\` — image \`${BASE_IMAGE}\` — built at \`$(git rev-parse --short HEAD)\`"
             echo ""
             echo "| Cluster | Program | Pubkey | Local | On-chain | Status |"
             echo "| --- | --- | --- | --- | --- | --- |"
           } >> "$GITHUB_STEP_SUMMARY"
 
+          # read -ra, not an unquoted expansion: the latter glob-expands the value against the
+          # workspace, so a stray `*` would silently pull in files named after a cluster.
+          read -ra blocking_list <<< "$BLOCKING_CLUSTERS"
+
+          # A cluster outside the list is still reported, it just cannot fail the job. Canonicalised
+          # the same way cluster_url aliases them, so `blocking-clusters: mainnet` also gates a repo
+          # whose Anchor.toml says [programs.mainnet-beta].
+          canonical_cluster() {
+            case "$1" in
+              mainnet|mainnet-beta) echo "mainnet" ;;
+              *)                    echo "$1" ;;
+            esac
+          }
+
+          blocking_cluster() {
+            [[ "$BLOCKING_CLUSTERS" == "*" ]] && return 0
+            local c want
+            want=$(canonical_cluster "$1")
+            for c in "${blocking_list[@]}"; do
+              [[ "$(canonical_cluster "$c")" == "$want" ]] && return 0
+            done
+            return 1
+          }
+
+          # A list that gates nothing silently disables the check, so say so up front rather than
+          # only when drift happens to appear.
+          if [[ "$BLOCKING_CLUSTERS" != "*" ]]; then
+            gated=0
+            for entry in "${entries[@]}"; do
+              IFS=$'\t' read -r c _n _p <<< "$entry"
+              [[ "$c" == "localnet" ]] && continue
+              blocking_cluster "$c" && gated=$((gated + 1))
+            done
+            if [[ $gated -eq 0 ]]; then
+              echo "::warning::blocking-clusters ('$BLOCKING_CLUSTERS') matches none of the non-localnet clusters this Anchor.toml declares, so no mismatch can fail this job. Expected a space-separated list of cluster names, or '*' for all."
+            fi
+          fi
+
+          unverified=0
+          blocking=0
           mismatches=0
+          checked=0
           for entry in "${entries[@]}"; do
             IFS=$'\t' read -r cluster name pubkey <<< "$entry"
             local_hash="${LOCAL_HASH[$name]:-}"
@@ -179,24 +377,43 @@ jobs:
             [[ -n "$local_hash" ]] && local_short="\`$(short "$local_hash")\`"
 
             url=$(cluster_url "$cluster")
-            if [[ -z "$url" ]]; then
+            if [[ "$cluster" == "localnet" ]]; then
               status="⏭ skipped (localnet)"
               on_chain_short="—"
-            elif [[ -z "$local_hash" ]]; then
-              status="⚠ no local build"
+            elif [[ -z "$url" ]]; then
+              # Keyed on the cluster, not the URL: an unset vars.*_RPC_URL must not read as localnet.
+              status="❌ no RPC URL for \`$cluster\`"
               on_chain_short="—"
+              echo "::error::No RPC URL for cluster '$cluster' — set the $(cluster_url_input "$cluster") input (or its vars.* source). Treating as unverified."
+              unverified=$((unverified + 1))
+              blocking_cluster "$cluster" && blocking=$((blocking + 1))
+            elif [[ -z "$local_hash" ]]; then
+              status="❌ no built artifact named \`$name.so\`"
+              on_chain_short="—"
+              echo "::error::Anchor.toml [programs.$cluster] lists '$name' but the build produced no target/deploy/$name.so — check that the name matches the crate's [lib] name"
+              unverified=$((unverified + 1))
+              blocking_cluster "$cluster" && blocking=$((blocking + 1))
             else
-              if on_chain_hash=$(solana-verify get-program-hash "$pubkey" --url "$url" 2>/dev/null); then
+              # `tail -n1` drops the RPC client's retry notices; the `if` guard keeps a read failure from killing the summary.
+              if on_chain_hash=$(solana-verify get-program-hash "$pubkey" --url "$url" 2>/dev/null | tail -n1) \
+                   && [[ -n "$on_chain_hash" ]]; then
+                checked=$((checked + 1))
                 on_chain_short="\`$(short "$on_chain_hash")\`"
                 if [[ "$local_hash" == "$on_chain_hash" ]]; then
                   status="✅ match"
                 else
                   status="❌ mismatch"
+                  echo "::error::$cluster/$name ($pubkey): built $local_hash but $on_chain_hash is deployed"
                   mismatches=$((mismatches + 1))
+                  unverified=$((unverified + 1))
+                  blocking_cluster "$cluster" && blocking=$((blocking + 1))
                 fi
               else
-                status="⏸ not deployed / RPC error"
+                status="❌ could not read deployed bytecode"
                 on_chain_short="—"
+                echo "::error::Could not read deployed bytecode for $cluster/$name ($pubkey) from $url — the program may not be deployed, or the RPC call failed. Treating as unverified."
+                unverified=$((unverified + 1))
+                blocking_cluster "$cluster" && blocking=$((blocking + 1))
               fi
             fi
 
@@ -206,9 +423,18 @@ jobs:
 
           {
             echo ""
-            if [[ $mismatches -gt 0 ]]; then
-              echo "**$mismatches mismatch(es) detected** — the on-chain bytecode differs from a verifiable build of the current ref."
+            if [[ $unverified -gt 0 ]]; then
+              echo "**$unverified of $checkable declared deployment(s) unverified** ($mismatches outright mismatch(es), $blocking on a blocking cluster) — the on-chain bytecode was not shown to come from this ref."
             else
-              echo "All checked deployments match the verifiable build of the current ref."
+              echo "All $checked checked deployment(s) match the verifiable build of the current ref."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ $blocking -gt 0 ]]; then
+            if [[ "$FAIL_ON_MISMATCH" == "true" ]]; then
+              exit 1
+            fi
+            echo "::warning::$blocking deployment(s) unverified on a blocking cluster; not failing because fail-on-mismatch is false"
+          elif [[ $unverified -gt 0 ]]; then
+            echo "::warning::$unverified deployment(s) unverified, none on a blocking cluster ($BLOCKING_CLUSTERS); not failing"
+          fi

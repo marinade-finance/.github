@@ -1,74 +1,148 @@
+# Org-wide cargo-deny policy: only what cargo-deny's defaults cannot express. Each override names its finding and its retirement condition; fix failures in the repo owning the dependency.
+
 [advisories]
-db-path = "~/.cargo/advisory-db"
-db-urls = ["https://github.com/rustsec/advisory-db"]
-yanked = "deny"
-# All ignored advisories are unfixable transitive dependencies pulled in
-# through the Solana / Anchor / SPL ecosystem (solana-sdk, solana-zk-sdk,
-# spl-token-2022, anchor-lang, …). Revisit when the upstream Solana crates
-# upgrade past these.
+# Default "all" yields 276 unmaintained findings, 251 of them transitive Solana/Anchor/SPL crates no repo can act on. RETIRE (back to "all") once the fleet is on agave 3.x.
+unmaintained = "workspace"
 ignore = [
-  # ed25519-dalek <2.0 — public-key oracle attack. solana-sdk pins 1.x.
-  "RUSTSEC-2022-0093",
-  # curve25519-dalek timing variability in Scalar*::sub. Solana-internal.
+  # rustls-webpki cert-validation bugs. Fixed in 0.103.12/0.103.13, but the affected 0.101.7/0.102.8 copies arrive via rustls 0.21/0.22 pins no repo can move alone (18 repos). RETIRE when no repo resolves rustls-webpki below 0.103.13.
+  "RUSTSEC-2026-0098",
+  "RUSTSEC-2026-0099",
+  "RUSTSEC-2026-0104",
+
+  # curve25519-dalek 3.2.x / ed25519-dalek 1.0.1, reached only through monolithic solana-sdk <=2.x (25 repos). RETIRE per repo on moving to the granular solana-* crates.
   "RUSTSEC-2024-0344",
-  # atty unmaintained. Pulled by solana-logger via env_logger 0.9.
-  "RUSTSEC-2024-0375",
-  # derivative unmaintained. Pulled via ark-ff / ark-ec.
-  "RUSTSEC-2024-0388",
-  # paste unmaintained. Pulled via solana-program / anchor-lang.
-  "RUSTSEC-2024-0436",
-  # number_prefix unmaintained. Pulled via indicatif.
-  "RUSTSEC-2025-0119",
-  # bincode 1.x unmaintained. Pulled via solana-sdk.
+  "RUSTSEC-2022-0093",
+
+  # h2 0.3 queues empty DATA frames without limit. `patched = [">= 0.4.16"]` covers no 0.3 release, so
+  # the 0.3 line cannot be fixed in range; it needs hyper 1.x via reqwest 0.12, which needs solana
+  # >= 2.3 (GEN-8777). Reached as a client only — axum 0.6 builds hyper without `http2`, so no HTTP/2
+  # server surface. Since this ignore is version-blind it also forgives 0.4.4-0.4.15, which IS an
+  # in-range bump; the repos that had one have been bumped rather than left to this entry.
+  # RETIRE: with the last of marcrank, marinade-common-rs-cli, solana-randomness-registry,
+  # solana-transaction-builder, tx-svc, validator-manager, stake-liquidator, staking-rewards,
+  # validator-bonds — the nine still on h2 0.3.
+  "RUSTSEC-2026-0258",
+
+  # patched = [] in the advisory DB: no release will ever fix these, and all four
+  # are informational = "unmaintained" rather than vulnerabilities. Ignoring them
+  # blinds nothing, unlike ring 0.16 / quinn-proto 0.8 / rustls 0.20 /
+  # tungstenite 0.17 / borsh 0.9, which all have reachable fixes and stay enforced.
+  # bincode 1.x is solana-sdk's wire format; im/bitmaps/sized-chunks come via
+  # solana-runtime and their upstreams are archived.
+  # RETIRE: when Solana drops bincode 1.x and the im family.
   "RUSTSEC-2025-0141",
-  # libsecp256k1 unmaintained. Pulled via solana-sdk.
-  "RUSTSEC-2025-0161",
-  # rand unsoundness with custom logger. Pulled via solana-sdk / spl-pod.
-  "RUSTSEC-2026-0097",
+  "RUSTSEC-2026-0247",
+  "RUSTSEC-2026-0248",
+  "RUSTSEC-2026-0251",
+
+  # Yanked crates, reviewed one by one. `name@version` is an exact match, so each entry stops
+  # matching the moment the resolved version moves — that is the retirement signal. `name:version`
+  # would be a semver *requirement* and would forgive the whole compatible range instead.
+  # Anything yanked for a defect, or fixable by an in-range bump, is NOT listed here.
+
+  # SPL patch releases yanked only for shipping `solana-program = ">=1.17.17,<=2"`, which
+  # resolved onto solana-program 2.0.0 and broke every 1.x consumer (solana-program-library
+  # PR #6182, issue #6897, reverted in cc8991ca/d69c56a3). No code change: 2.3.0 vs 2.3.1 and
+  # 0.1.0 vs 0.1.1 differ only in Cargo.toml. Reached only under spl-token-2022 1.0/2.0.
+  # RETIRE: all nine, once every repo is off the solana 1.17/1.18 line.
+  { crate = "spl-discriminator@0.1.1", reason = "bad solana-program <=2 range, no code defect" },
+  { crate = "spl-pod@0.1.1", reason = "bad solana-program <=2 range, no code defect" },
+  { crate = "spl-program-error@0.3.1", reason = "bad solana-program <=2 range, no code defect" },
+  { crate = "spl-tlv-account-resolution@0.5.2", reason = "bad solana-program <=2 range, no code defect" },
+  { crate = "spl-type-length-value@0.3.1", reason = "bad solana-program <=2 range, no code defect" },
+  { crate = "spl-token-group-interface@0.1.1", reason = "bad solana-program <=2 range; 0.1.0 differs only in Cargo.toml/README" },
+  { crate = "spl-token-metadata-interface@0.2.1", reason = "bad solana-program <=2 range, no code defect" },
+  { crate = "spl-transfer-hook-interface@0.5.1", reason = "bad solana-program <=2 range; pinned by spl-token-2022 2.0.2, no in-range alternative" },
+  { crate = "spl-associated-token-account@2.3.1", reason = "bad solana-program <=2 range; downgrading forces a semver-major spl-token-2022 2.0.2 -> 1.0.0" },
+
+  # liquid-staking-referral-program only, pinned by anchor 0.14 / solana-program =1.7.11.
+  # RETIRE: when that program leaves anchor 0.14.
+  { crate = "anchor-lang@0.14.0", reason = "administrative bulk yank of every anchor-lang <=0.24.1 (coral-xyz/anchor#1816) with no published reason; no non-yanked version satisfies ^0.14.0" },
 ]
 
-# Permissive-only allow list. Anything copyleft (GPL/LGPL/AGPL/EUPL/EPL),
-# source-disclosure-required, or commercial-restricting must NOT be added
-# without an explicit security review — the goal is that downstream consumers
-# can ship binaries built from this tree without source-disclosure obligations.
+# A yanked crate is an error, not a warning: the exceptions above are reviewed and version-scoped.
+# solana_rbpf 0.8.0 is deliberately absent, so solana-transaction-builder and tx-svc stay red on it:
+# it is pinned `=0.8.0` by solana-program-runtime 1.18 and carries RUSTSEC-2026-0191 (unsound,
+# memory-corruption, patched = []), and the pin is gone from the solana 2.3 tree, so this is
+# fixable. RUSTSEC-2026-0191 does surface under `unsound = "all"`; it is silent here only because
+# `unsound` defaults to workspace scope and solana_rbpf is transitive.
+yanked = "deny"
+
+# Allow list; copyleft entries are grouped at the end.
 [licenses]
+# Skips the unlicensed check for `publish = false` crates. RETIRE when every first-party crate declares a license field.
+private = { ignore = true }
+
 allow = [
-  # Classic permissive
+  # Classic permissive.
   "MIT",
   "Apache-2.0",
-  "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause",
   "BSD-3-Clause",
-  "ISC",
-  # Boost — permissive, no patent grant. Used as alternative by `ryu`.
+  "ISC",           # aws-lc-rs/-sys, libloading, forwarded-header-value
+  # Boost. Required outright by xxhash-rust, which declares it alone and arrives with redis 1.6
+  # (waypoint#50). ryu/whoami/wasite also offer it, but as an OR-alternative to Apache-2.0.
   "BSL-1.0",
-  # Public-domain-equivalents. Used as alternatives by csv, aho-corasick,
-  # memchr, termcolor, walkdir, adler2, constant_time_eq, …
-  "0BSD",
-  "Unlicense",
-  "MIT-0",
-  "CC0-1.0",
-  # Weak copyleft, file-level — file-level disclosure only.
-  "MPL-2.0",
-  # zlib (libz-rs-sys / zlib-rs and tinyvec/bytemuck/cfg_eval as alternative).
-  "Zlib",
-  # ICU / idna stack pulled in via reqwest -> url -> idna.
+  # Public-domain-equivalents, required outright (not as OR-alternatives).
+  "0BSD",          # enum-iterator, enum-iterator-derive
+  "CC0-1.0",       # constant_time_eq 0.1.5, keccak, tiny-keccak
+  # Weak copyleft, file-level disclosure only.
+  "MPL-2.0",       # attohttpc; also satisfies `MPL-2.0+` (im, bitmaps, …)
+  "Zlib",          # foldhash, zlib-rs, libz-rs-sys
+  # Unicode data tables, reached via url -> idna -> icu_*.
   "Unicode-3.0",
-  # webpki-roots ships the Mozilla CA bundle.
+  # unicode-ident <= 1.0.12, attribution-only; only locks pinning the old proc-macro2/syn stack need it.
+  "Unicode-DFS-2016",
+  # webpki-root-certs / webpki-roots ship the Mozilla CA bundle.
   "CDLA-Permissive-2.0",
+  # libbz2-rs-sys, the default backend of bzip2 0.6 (agave-snapshots 4.x).
+  "bzip2-1.0.6",
+  # Not SPDX: Apache-2.0 plus clause 4(c), forbidding modification of the work into a "Competitive
+  # Product". A use restriction, so it cannot honestly be spelled Apache-2.0. Reached only through
+  # mpl-token-metadata (solana-snapshot-parser, validator-bonds), which we consume unmodified.
+  # RETIRE when Metaplex relicenses or the dependency is dropped.
+  "LicenseRef-Metaplex-NFT-OSL-1.0",
 ]
-confidence-threshold = 0.93
-exceptions = []
+exceptions = [
+  # The OpenSSL license is acceptable only for the BoringSSL-derived shims in ring 0.16 (9 repos). RETIRE with the clarify entry below.
+  { crate = "ring", allow = ["OpenSSL"] },
+  # Strong copyleft, scoped to the one crate that needs it (solana-program-accounts). 0.7.0 declares
+  # the deprecated bare id. RETIRE when the fumarole client is dropped or relicensed.
+  { crate = "yellowstone-fumarole-client", allow = ["AGPL-3.0"] },
+]
 
-[bans]
-multiple-versions = "warn"
-wildcards = "deny"
-deny = []
-skip = []
-skip-tree = []
+# ring <0.17 declares only `license-file`, which cargo-deny cannot resolve; >=0.17.9 declares its own SPDX expression. RETIRE when no repo resolves ring below 0.17.9.
+[[licenses.clarify]]
+crate = "ring:<0.17.9"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = []
 
+# mpl-token-metadata 5.x ships no `license` field, only `license-file`. The hash pins the LICENSE
+# text this override was read against, so the override dies if Metaplex changes the terms.
+[[licenses.clarify]]
+crate = "mpl-token-metadata"
+expression = "LicenseRef-Metaplex-NFT-OSL-1.0"
+license-files = [{ path = "LICENSE", hash = 0xd3dacb8e }]
+
+# Stricter than the "warn" default and the only thing keeping an arbitrary git dependency out of the fleet; it suppresses no finding.
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+allow-git = [
+  # jito-priority-fee-distribution / jito-tip-distribution are unpublished (delegation-strategy-2). RETIRE when Jito publishes them.
+  "https://github.com/jito-foundation/jito-programs",
+  # spl-governance 4.x is unpublished (vote-aggregator). RETIRE when it is published, or when vote-aggregator drops it.
+  "https://github.com/solana-labs/solana-program-library",
+  # marinade-sdk needs anchor 0.25 from git; the crates.io release of that vintage lacks fixes it needs. RETIRE when marinade-sdk moves to a published anchor release.
+  "https://github.com/coral-xyz/anchor",
+]
+
+# First-party crates are consumed as git dependencies pinned to a tag/branch before they are published; one org entry beats a list that grows with every internal crate. RETIRE when they are consumed by version.
+[sources.allow-org]
+github = ["marinade-finance"]
+
+[bans]
+# Not redundant now that private.ignore exempts unpublished crates from the
+# unlicensed check: a wildcard dep in one of those would otherwise go unflagged.
+wildcards = "deny"
+allow-wildcard-paths = true

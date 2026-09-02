@@ -1,0 +1,466 @@
+name: Verifiable Build (reusable)
+
+permissions:
+  contents: read
+
+# Declare `concurrency` in the caller, not here: a called workflow evaluates it in the caller's context, so a shared group name deadlocks it.
+on:
+  workflow_call:
+    inputs:
+      anchor-workspace:
+        description: "Path to the Anchor workspace root (must contain Anchor.toml). Defaults to the repository root."
+        required: false
+        default: "."
+        type: string
+      base-image:
+        description: >-
+          Full Docker image reference used for the reproducible build, e.g.
+          "solanafoundation/solana-verifiable-build:2.3.0". Leave empty to derive it
+          from the `solana-program` version pinned in Cargo.lock, which is what
+          solana-verify does on its own. Set it explicitly to pin a repo whose
+          lockfile version has no published image, or to point at an image this
+          org publishes itself. Changing this changes the bytecode hash, so treat
+          a bump as a deliberate, reviewed change.
+        required: false
+        default: ""
+        type: string
+      solana-verify-version:
+        description: "solana-verify CLI version (Ellipsis Labs/solana-verifiable-build) to install. Pinned so hashes stay reproducible across runs — bumping it can change the bytecode hash, so treat that as a deliberate change."
+        required: false
+        default: "0.4.15"
+        type: string
+      library-name:
+        description: >-
+          Crate whose .so to build, passed through as `solana-verify build
+          --library-name`. REQUIRED for a workspace whose members are not all
+          SBF-buildable: with it unset, solana-verify builds from the workspace
+          root, so cargo resolves every member (CLIs, clients, test harnesses)
+          and the build fails on the first one that is not a Solana program.
+          Leave empty only for a single-program repo. Use the crate's `[lib]
+          name`, which is also the .so stem.
+        required: false
+        default: ""
+        type: string
+      cargo-args:
+        description: >-
+          Extra arguments appended after `--` to the cargo invocation inside the
+          build container, e.g. `--config env.GIT_REV=abc1234`. REQUIRED for a
+          program that bakes build-time environment into its binary: validator-bonds
+          embeds env!("GIT_REV") / env!("GIT_REV_NAME") in its security_txt, and
+          without these the build produces GIT_REV_MISSING and can never match the
+          deployed bytecode. Whitespace-separated; quote nothing here.
+        required: false
+        default: ""
+        type: string
+      verify-onchain:
+        description: >-
+          Compare each built artifact's sha256 against the bytecode deployed on
+          chain. Program IDs come from `program-ids` when set, otherwise from the
+          `[programs.<programs-section>]` table in Anchor.toml. A repo with no
+          resolvable program IDs FAILS rather than passing green — silently
+          verifying nothing is the failure mode this input exists to prevent.
+        required: false
+        default: true
+        type: boolean
+      programs-section:
+        description: "Which Anchor.toml [programs.<section>] table supplies the on-chain program IDs."
+        required: false
+        default: "mainnet"
+        type: string
+      program-ids:
+        description: >-
+          Optional override for the on-chain program IDs, one `program_name=pubkey`
+          per line. `program_name` must match the built artifact's file stem
+          (target/deploy/<program_name>.so, i.e. the crate's [lib] name). Use this
+          when a repo's Anchor.toml cannot be edited, or to verify against an ID
+          that Anchor.toml does not list.
+        required: false
+        default: ""
+        type: string
+      rpc-url:
+        description: "RPC endpoint used to read deployed bytecode. An explicit URL rather than a CLI moniker, so resolution never depends on a Solana CLI config file being present on the runner."
+        required: false
+        default: "https://api.mainnet-beta.solana.com"
+        type: string
+      fail-on-mismatch:
+        description: >-
+          Fail the job when a built hash differs from the deployed hash, when a
+          listed program produced no local artifact, or when the deployed hash
+          could not be read. Set false only to observe drift without blocking.
+        required: false
+        default: true
+        type: boolean
+      artifact-retention-days:
+        description: "Retention period for the uploaded target/deploy/*.so artifact."
+        required: false
+        default: 90
+        type: number
+    outputs:
+      base-image:
+        description: "The Docker image reference actually used for the build."
+        value: ${{ jobs.verifiable-build.outputs.base-image }}
+      hashes:
+        description: "JSON object mapping program name to the sha256 of its built artifact."
+        value: ${{ jobs.verifiable-build.outputs.hashes }}
+      verified:
+        description: "\"true\" when every program ID checked matched its deployed bytecode, \"false\" otherwise, \"skipped\" when verify-onchain was off."
+        value: ${{ jobs.verifiable-build.outputs.verified }}
+
+jobs:
+  verifiable-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: ${{ inputs.anchor-workspace }}
+    outputs:
+      base-image: ${{ steps.image.outputs.base-image }}
+      hashes: ${{ steps.hashes.outputs.hashes }}
+      verified: ${{ steps.verify.outputs.verified || 'skipped' }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+        with:
+          persist-credentials: false
+
+      - name: Verify Anchor workspace
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          ANCHOR_WORKSPACE: ${{ inputs.anchor-workspace }}
+        run: |
+          set -euo pipefail
+          if [[ ! -d "$ANCHOR_WORKSPACE" ]]; then
+            echo "::error::anchor-workspace '$ANCHOR_WORKSPACE' does not exist"
+            exit 1
+          fi
+          if [[ ! -f "$ANCHOR_WORKSPACE/Anchor.toml" ]]; then
+            echo "::error::Anchor.toml not found at '$ANCHOR_WORKSPACE/Anchor.toml' — this workflow only builds Anchor workspaces"
+            exit 1
+          fi
+          if [[ ! -f "$ANCHOR_WORKSPACE/Cargo.lock" ]]; then
+            echo "::error::Cargo.lock not found at '$ANCHOR_WORKSPACE/Cargo.lock' — a reproducible build requires a committed lockfile"
+            exit 1
+          fi
+
+      # solana-verify derives the image from Cargo.lock's solana-program pin, not Anchor.toml; resolve it here to make the choice visible and overridable.
+      - name: Resolve build image
+        id: image
+        shell: bash
+        env:
+          BASE_IMAGE_INPUT: ${{ inputs.base-image }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$BASE_IMAGE_INPUT" ]]; then
+            image="$BASE_IMAGE_INPUT"
+            echo "Using pinned base image from the base-image input."
+          else
+            versions="$(python3 - <<'PY'
+          import tomllib
+          with open("Cargo.lock", "rb") as f:
+              lock = tomllib.load(f)
+          seen = sorted({p["version"] for p in lock.get("package", []) if p.get("name") == "solana-program"})
+          print("\n".join(seen))
+          PY
+          )"
+            count=$(printf '%s\n' "$versions" | grep -c . || true)
+            if [[ "$count" -eq 0 ]]; then
+              echo "::error::Cargo.lock pins no solana-program version, so no build image can be derived. Set the base-image input explicitly."
+              exit 1
+            fi
+            if [[ "$count" -gt 1 ]]; then
+              echo "::error::Cargo.lock pins multiple solana-program versions ($(printf '%s' "$versions" | tr '\n' ' ')); image selection is ambiguous. Set the base-image input explicitly."
+              exit 1
+            fi
+            image="solanafoundation/solana-verifiable-build:${versions}"
+            echo "Derived base image from Cargo.lock solana-program ${versions}."
+          fi
+          echo "base-image=$image" >> "$GITHUB_OUTPUT"
+          echo "Base image: $image"
+
+      - name: Pull build image
+        shell: bash
+        env:
+          BASE_IMAGE: ${{ steps.image.outputs.base-image }}
+        run: |
+          set -euo pipefail
+          if ! docker manifest inspect "$BASE_IMAGE" > /dev/null 2>&1; then
+            echo "::error::No such image tag: '$BASE_IMAGE'. No verifiable-build image is published for that solana-program version, so this repo cannot be built reproducibly as configured. Set the base-image input to a published tag (or to an image this org publishes), or realign Cargo.lock onto a solana-program version that has one."
+            exit 1
+          fi
+          if ! docker pull "$BASE_IMAGE"; then
+            echo "::error::Image '$BASE_IMAGE' exists in the registry but could not be pulled. This is an infrastructure failure (disk space, registry rate limit, or network), not a repo misconfiguration — retry the run."
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: stable
+
+      - name: Cache solana-verify binary
+        id: cache-solana-verify
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/solana-verify
+          key: solana-verify-${{ runner.os }}-${{ inputs.solana-verify-version }}
+
+      # Installed from the repo root; inside the Anchor workspace `cargo install` would inherit its .cargo/config.toml and toolchain pin.
+      # solana-verify <= 0.4.11 pulls hidapi, whose build needs libudev; marinade-config
+      # pins 0.4.11 because that is the version its recorded hash was produced with.
+      - name: Install libudev for hidapi
+        if: steps.cache-solana-verify.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libudev-dev pkg-config
+
+      - name: Install solana-verify
+        if: steps.cache-solana-verify.outputs.cache-hit != 'true'
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          SOLANA_VERIFY_VERSION: ${{ inputs.solana-verify-version }}
+        run: cargo install --locked solana-verify --version "$SOLANA_VERIFY_VERSION"
+
+      - name: Verifiable build
+        env:
+          BASE_IMAGE: ${{ steps.image.outputs.base-image }}
+          LIBRARY_NAME: ${{ inputs.library-name }}
+          CARGO_ARGS: ${{ inputs.cargo-args }}
+        run: |
+          set -euo pipefail
+          args=(--base-image "$BASE_IMAGE")
+          if [[ -n "$LIBRARY_NAME" ]]; then
+            args+=(--library-name "$LIBRARY_NAME")
+          fi
+          if [[ -n "${CARGO_ARGS//[[:space:]]/}" ]]; then
+            # Via a file, not process substitution: the latter hides xargs' exit status, so a
+            # malformed value (an unmatched quote, say) silently became an empty argv and the
+            # build ran without the args it needs.
+            ARGS_FILE="${RUNNER_TEMP:-/tmp}/cargo-args"
+            if ! printf '%s' "$CARGO_ARGS" | xargs -n1 printf '%s\n' > "$ARGS_FILE"; then
+              echo "::error::Could not parse the cargo-args input: $CARGO_ARGS — check for an unmatched quote. Expected shell-style words, e.g. --config env.GIT_REV=abc1234"
+              exit 1
+            fi
+            # mapfile, not `read -a`: `read` stops at the first newline and would drop every later argument.
+            mapfile -t extra < "$ARGS_FILE"
+            if [[ ${#extra[@]} -eq 0 ]]; then
+              echo "::error::The cargo-args input ($CARGO_ARGS) parsed to no arguments."
+              exit 1
+            fi
+            args+=(-- "${extra[@]}")
+          fi
+          echo "solana-verify build ${args[*]}"
+          solana-verify build "${args[@]}"
+
+      - name: Compute executable hashes
+        id: hashes
+        shell: bash
+        env:
+          BASE_IMAGE: ${{ steps.image.outputs.base-image }}
+          SOLANA_VERIFY_VERSION: ${{ inputs.solana-verify-version }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          binaries=(target/deploy/*.so)
+          shopt -u nullglob
+          if [[ ${#binaries[@]} -eq 0 ]]; then
+            echo "::error::solana-verify build produced no .so files in target/deploy"
+            exit 1
+          fi
+
+          : > "${RUNNER_TEMP:-/tmp}/local-hashes.tsv"
+          {
+            echo "## Verifiable build"
+            echo ""
+            echo "solana-verify \`${SOLANA_VERIFY_VERSION}\` — image \`${BASE_IMAGE}\` — ref \`$(git rev-parse --short HEAD)\`"
+            echo ""
+            echo "| Program | sha256 |"
+            echo "| --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for so in "${binaries[@]}"; do
+            name=$(basename "$so" .so)
+            hash=$(solana-verify get-executable-hash "$so")
+            printf '%s\t%s\n' "$name" "$hash" >> "${RUNNER_TEMP:-/tmp}/local-hashes.tsv"
+            echo "| \`$name\` | \`$hash\` |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          json=$(python3 - "${RUNNER_TEMP:-/tmp}/local-hashes.tsv" <<'PY'
+          import json, sys
+          rows = {}
+          with open(sys.argv[1]) as f:
+              for line in f:
+                  if line.strip():
+                      name, h = line.rstrip("\n").split("\t", 1)
+                      rows[name] = h
+          print(json.dumps(rows, separators=(",", ":"), sort_keys=True))
+          PY
+          )
+          echo "hashes=$json" >> "$GITHUB_OUTPUT"
+
+      - name: Compare against deployed bytecode
+        id: verify
+        if: ${{ inputs.verify-onchain }}
+        shell: bash
+        env:
+          PROGRAM_IDS: ${{ inputs.program-ids }}
+          PROGRAMS_SECTION: ${{ inputs.programs-section }}
+          RPC_URL: ${{ inputs.rpc-url }}
+          FAIL_ON_MISMATCH: ${{ inputs.fail-on-mismatch }}
+        run: |
+          set -euo pipefail
+
+          ENTRIES="${RUNNER_TEMP:-/tmp}/program-ids.tsv"
+
+          # Redirect to a file, not process substitution: the latter drops the exit status, turning a parse error into a silent "no program IDs".
+          if [[ -n "${PROGRAM_IDS//[[:space:]]/}" ]]; then
+            echo "Program IDs supplied via the program-ids input."
+            python3 - > "$ENTRIES" <<'PY'
+          import os, sys
+          for raw in os.environ["PROGRAM_IDS"].splitlines():
+              line = raw.strip()
+              if not line or line.startswith("#"):
+                  continue
+              if "=" not in line:
+                  sys.exit(f"malformed program-ids entry (expected name=pubkey): {raw!r}")
+              name, pubkey = line.split("=", 1)
+              name, pubkey = name.strip(), pubkey.strip()
+              if not name or not pubkey:
+                  sys.exit(f"malformed program-ids entry (expected name=pubkey): {raw!r}")
+              print(f"{name}\t{pubkey}")
+          PY
+          else
+            echo "Program IDs read from Anchor.toml [programs.${PROGRAMS_SECTION}]."
+            export SECTIONS="${RUNNER_TEMP:-/tmp}/programs-sections.txt"
+            python3 - > "$ENTRIES" <<'PY'
+          import os, tomllib
+          import sys
+
+          section = os.environ["PROGRAMS_SECTION"]
+          with open("Anchor.toml", "rb") as f:
+              data = tomllib.load(f)
+          programs = data.get("programs", {})
+          # Recorded for the error path below, so it can name what the repo actually declares.
+          with open(os.environ["SECTIONS"], "w") as out:
+              for name, tbl in programs.items():
+                  if isinstance(tbl, dict) and tbl:
+                      out.write(name + "\n")
+          table = programs.get(section, {})
+          if isinstance(table, dict):
+              for name, pubkey in table.items():
+                  if isinstance(pubkey, dict):
+                      pubkey = pubkey.get("address")
+                  if isinstance(pubkey, str) and pubkey:
+                      print(f"{name}\t{pubkey}")
+                  else:
+                      sys.stderr.write(
+                          f"::error::Anchor.toml entry '{name}' has no readable address; "
+                          "expected a string or a table with an `address` key\n"
+                      )
+                      sys.exit(1)
+          PY
+          fi
+
+          mapfile -t entries < "$ENTRIES"
+          if [[ ${#entries[@]} -eq 0 ]]; then
+            declared=""
+            usable=""
+            if [[ -s "${SECTIONS:-/nonexistent}" ]]; then
+              declared=$(paste -sd' ' "$SECTIONS")
+              usable=$(grep -vx 'localnet' "$SECTIONS" | paste -sd' ' - || true)
+            fi
+            if [[ -z "$declared" ]]; then
+              remedy="Anchor.toml declares no [programs.*] table with entries at all. Add [programs.${PROGRAMS_SECTION}], pass the program-ids input, or set verify-onchain: false to build without verifying."
+            elif [[ -z "$usable" ]]; then
+              remedy="Anchor.toml declares only [programs.localnet], which has no deployment to compare against. This repo wants verify-onchain: false — the verifiable build still runs and its hashes are still reported."
+            else
+              remedy="Anchor.toml declares program IDs under: $usable. Set programs-section to one of those, add [programs.${PROGRAMS_SECTION}], pass the program-ids input, or set verify-onchain: false."
+            fi
+            echo "::error::No program IDs to verify against: no [programs.${PROGRAMS_SECTION}] table with program entries. $remedy"
+            {
+              echo ""
+              echo "### On-chain verification"
+              echo ""
+              echo "**Failed: nothing to verify.** No \`[programs.${PROGRAMS_SECTION}]\` entries in Anchor.toml and no \`program-ids\` input."
+              echo ""
+              echo "$remedy"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "verified=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          declare -A LOCAL_HASH=()
+          while IFS=$'\t' read -r name hash; do
+            [[ -n "$name" ]] && LOCAL_HASH["$name"]="$hash"
+          done < "${RUNNER_TEMP:-/tmp}/local-hashes.tsv"
+
+          short() { printf '%s' "${1:0:8}…${1: -6}"; }
+
+          # `tail -n1` drops the RPC client's retry notices; callers guard with `if` so a read failure becomes a row, not a crash.
+          onchain_hash() {
+            solana-verify get-program-hash "$1" --url "$RPC_URL" 2>/dev/null | tail -n1
+          }
+
+          {
+            echo ""
+            echo "### On-chain verification"
+            echo ""
+            echo "RPC \`${RPC_URL}\`"
+            echo ""
+            echo "| Program | Program ID | Built | Deployed | Status |"
+            echo "| --- | --- | --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          failures=0
+          for entry in "${entries[@]}"; do
+            IFS=$'\t' read -r name pubkey <<< "$entry"
+            local_hash="${LOCAL_HASH[$name]:-}"
+
+            if [[ -z "$local_hash" ]]; then
+              echo "| \`$name\` | \`$(short "$pubkey")\` | — | — | ❌ no built artifact named \`$name.so\` |" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::Anchor.toml lists program '$name' but the build produced no target/deploy/$name.so — check that the name matches the crate's [lib] name"
+              failures=$((failures + 1))
+              continue
+            fi
+
+            if ! deployed=$(onchain_hash "$pubkey") || [[ -z "$deployed" ]]; then
+              echo "| \`$name\` | \`$(short "$pubkey")\` | \`$(short "$local_hash")\` | — | ❌ could not read deployed bytecode |" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::Could not read deployed bytecode for $name ($pubkey) from $RPC_URL — the program may not be deployed, or the RPC call failed. Treating as unverified."
+              failures=$((failures + 1))
+              continue
+            fi
+
+            if [[ "$local_hash" == "$deployed" ]]; then
+              echo "| \`$name\` | \`$(short "$pubkey")\` | \`$(short "$local_hash")\` | \`$(short "$deployed")\` | ✅ match |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| \`$name\` | \`$(short "$pubkey")\` | \`$(short "$local_hash")\` | \`$(short "$deployed")\` | ❌ mismatch |" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::$name ($pubkey): built $local_hash but $deployed is deployed"
+              failures=$((failures + 1))
+            fi
+          done
+
+          if [[ $failures -eq 0 ]]; then
+            echo "verified=true" >> "$GITHUB_OUTPUT"
+            {
+              echo ""
+              echo "All ${#entries[@]} program(s) match the deployed bytecode."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "verified=false" >> "$GITHUB_OUTPUT"
+            {
+              echo ""
+              echo "**$failures of ${#entries[@]} program(s) unverified.** A mismatch means the deployed bytecode was not produced from this ref — expected on a branch that is ahead of the deployment, a finding worth investigating on a release tag."
+            } >> "$GITHUB_STEP_SUMMARY"
+            if [[ "$FAIL_ON_MISMATCH" == "true" ]]; then
+              exit 1
+            fi
+            echo "::warning::$failures program(s) unverified; not failing because fail-on-mismatch is false"
+          fi
+
+      - name: Upload program binaries
+        if: ${{ !cancelled() && steps.hashes.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verifiable-build-${{ github.sha }}
+          path: ${{ inputs.anchor-workspace }}/target/deploy/*.so
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact-retention-days }}

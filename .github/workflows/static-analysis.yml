@@ -1,12 +1,5 @@
 name: Static Analysis (reusable)
 
-# Cap the GITHUB_TOKEN at workflow scope to the minimum every job needs.
-# None of the jobs below write to the repo — they read code, run lints,
-# build artifacts, and (for verifiable-build) upload an artifact via the
-# Actions Cache API, which doesn't need any token scope. Declaring
-# permissions here overrides whatever the caller granted, so a caller
-# with a broader default token can't accidentally widen the blast radius
-# of any compromised step or third-party action.
 permissions:
   contents: read
 
@@ -39,20 +32,30 @@ on:
         default: ""
         type: string
       rust-toolchain:
-        description: "Toolchain for clippy"
+        description: "Toolchain for clippy when the workspace doesn't pin its own via rust-toolchain[.toml]. When a pin exists, that toolchain wins and clippy is installed on it."
         required: false
         default: "stable"
         type: string
       solana-lints-toolchain:
-        description: "Nightly toolchain for solana-lints (must match upstream crytic/solana-lints rust-toolchain)"
+        description: "Nightly toolchain for the dylint lints (must match the lints repo's rust-toolchain). otter-sec/anchor-lints pins nightly-2025-09-18 (rustc 1.91); the legacy crytic/trailofbits solana-lints is stuck on nightly-2025-01-09 (rustc 1.86), too old for workspaces whose deps require rustc 1.88. Forced via RUSTUP_TOOLCHAIN at dylint time so a workspace rust-toolchain[.toml] pin can't override it."
         required: false
-        default: "nightly-2025-01-09"
+        default: "nightly-2025-09-18"
         type: string
       clippy-deny-warnings:
         description: "Treat clippy warnings as errors"
         required: false
         default: true
         type: boolean
+      clippy-features:
+        description: "Cargo feature selection for clippy: 'auto' | 'all' | 'default' | 'none' | a comma-separated feature list. 'auto' uses --all-features on plain Rust workspaces (maximum coverage) but *default* features on Anchor workspaces, whose feature sets are mutually exclusive by design — enabling `idl-build` together with `no-entrypoint` fails to compile (`error[E0425]: cannot find function __idl_dispatch`), and `no-entrypoint` also orphans imports that only the entrypoint uses. Set 'all' explicitly on an Anchor repo whose features really are additive."
+        required: false
+        default: "auto"
+        type: string
+      clippy-extra-args:
+        description: "Extra whitespace-separated rustc/clippy lint arguments appended after `--` (e.g. `-A clippy::too_many_arguments`, or another `--check-cfg` expression for a cfg the shared allowlist below doesn't cover yet). Escape hatch so a single odd repo never has to wait on a change to this workflow."
+        required: false
+        default: ""
+        type: string
       xray-version:
         description: "Sec3 X-Ray release tag to install"
         required: false
@@ -68,33 +71,35 @@ on:
         required: false
         default: "0.31.1"
         type: string
-      solana-lints-ref:
-        description: "crytic/solana-lints git ref (commit SHA or tag) to build lints from"
+      solana-lints-repo:
+        description: "Git URL of the dylint lints to build. Default is otter-sec/anchor-lints (actively maintained, Anchor-focused, edition 2024, a single Cargo workspace). The legacy trailofbits/crytic solana-lints is dormant and stuck on nightly-2025-01-09."
         required: false
-        default: "e0f31e2e69c62a33669bf657343eab2d94e6dc9d"
+        default: "https://github.com/otter-sec/anchor-lints.git"
+        type: string
+      solana-lints-ref:
+        description: "Git ref (commit SHA or tag) of solana-lints-repo to build lints from. Must be compatible with solana-lints-toolchain."
+        required: false
+        default: "d8116dd619414c1b4dd9d17cd66458e66f699c0a"
         type: string
       cargo-dylint-version:
-        description: "cargo-dylint / dylint-link version to install. Pinned to 4.1.0 because dylint_internal 4.1.1+ bumped cargo_metadata from ^0.19 to ^0.22, which pulls cargo-platform 0.3.x (rustc >=1.88) — incompatible with the nightly-2025-01-09 (rustc 1.86) used to build the lints. dylint 4.1.0 uses cargo_metadata 0.19 → cargo-platform 0.1.x, which builds cleanly on 1.86."
+        description: "cargo-dylint / dylint-link version to install. Must match the dylint_linting version the lints repo builds against — otter-sec/anchor-lints uses dylint 5.x; cargo-dylint 5.0.0 builds cleanly on the nightly-2025-09-18 (rustc 1.91) the lints pin."
         required: false
-        default: "4.1.0"
+        default: "5.0.0"
         type: string
+      xray-fail-on-findings:
+        description: >-
+          Fail the sec3-xray job when X-Ray reports potential vulnerabilities.
+          Its own exit code is always 0 and its findings never matched the fatal-error
+          patterns, so before this the check could not fail on a finding. Set false to
+          annotate without failing while a repo works through a backlog.
+        required: false
+        default: true
+        type: boolean
       deny-config:
         description: "URL of the cargo-deny config to use. Pin to a tag/SHA for stable behavior across reusable-workflow versions."
         required: false
-        default: "https://raw.githubusercontent.com/marinade-finance/.github/main/deny.toml"
+        default: "https://raw.githubusercontent.com/marinade-finance/.github/claude/static-analysis-required-wrapper/deny.toml"
         type: string
-      solana-verify-version:
-        description: "solana-verify CLI version (Ellipsis Labs/solana-verifiable-build) to install for the verifiable-build job."
-        required: false
-        default: "0.4.15"
-        type: string
-
-# `persist-credentials: false` on every actions/checkout: none of the jobs
-# below push back to the repo (they only read code, run lints, build
-# artifacts, upload-artifact), so the default `GITHUB_TOKEN` injected into
-# git config by checkout is dead weight. Dropping it limits the blast radius
-# of any compromised step or third-party action — a downstream `cargo`
-# build script can no longer use the token to read or push to the repo.
 
 jobs:
   detect:
@@ -102,6 +107,7 @@ jobs:
     outputs:
       has-rust: ${{ steps.check.outputs.has-rust }}
       has-anchor: ${{ steps.check.outputs.has-anchor }}
+      anchor-present: ${{ steps.check.outputs.anchor-present }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
         with:
@@ -123,12 +129,6 @@ jobs:
             exit 1
           fi
 
-          # When run-solana is 'false', skip Anchor workspace validation
-          # entirely — a consumer should be able to disable Solana checks
-          # even if anchor-workspace is set (or accidentally set).
-          # Otherwise, when run-solana is 'true' or the caller set
-          # anchor-workspace explicitly, treat it as an assertion that an
-          # Anchor workspace exists there and fail fast if not.
           if [[ "$RUN_SOLANA" != "false" ]] && \
              [[ -n "$ANCHOR_WORKSPACE_INPUT" || "$RUN_SOLANA" == "true" ]]; then
             if [[ ! -d "$ANCHOR_WORKSPACE" ]]; then
@@ -141,12 +141,6 @@ jobs:
             fi
           fi
 
-          # Rust detection — require Cargo.toml at the workspace root, since
-          # `cargo clippy` and `cargo-deny` both need a root manifest. A nested
-          # crate without a root manifest would otherwise enable jobs that fail.
-          # When run-rust is forced 'true', assert the root manifest exists so
-          # callers get a clear configuration error instead of a cryptic
-          # Cargo error in the downstream clippy/cargo-deny jobs.
           if [[ "$RUN_RUST" == "true" ]]; then
             if [[ ! -f "$RUST_WORKSPACE/Cargo.toml" ]]; then
               echo "::error::run-rust='true' but Cargo.toml not found at '$RUST_WORKSPACE/Cargo.toml'"
@@ -161,26 +155,28 @@ jobs:
             HAS_RUST=false
           fi
 
-          # Anchor detection — Anchor.toml at the root of anchor-workspace.
-          # No fallback to anchor-lang dependency: off-chain services that
-          # consume anchor-client are not Anchor programs.
+          if [[ -d "$ANCHOR_WORKSPACE" && -f "$ANCHOR_WORKSPACE/Anchor.toml" ]]; then
+            ANCHOR_PRESENT=true
+          else
+            ANCHOR_PRESENT=false
+          fi
+
           if [[ "$RUN_SOLANA" == "true" ]]; then
             HAS_ANCHOR=true
           elif [[ "$RUN_SOLANA" == "false" ]]; then
             HAS_ANCHOR=false
-          elif [[ -d "$ANCHOR_WORKSPACE" && -f "$ANCHOR_WORKSPACE/Anchor.toml" ]]; then
-            HAS_ANCHOR=true
           else
-            HAS_ANCHOR=false
+            HAS_ANCHOR=$ANCHOR_PRESENT
           fi
 
           echo "has-rust=$HAS_RUST" >> "$GITHUB_OUTPUT"
           echo "has-anchor=$HAS_ANCHOR" >> "$GITHUB_OUTPUT"
+          echo "anchor-present=$ANCHOR_PRESENT" >> "$GITHUB_OUTPUT"
 
           {
             echo "## Detection results"
             echo "- Rust workspace: \`$RUST_WORKSPACE\` → has-rust=\`$HAS_RUST\`"
-            echo "- Anchor workspace: \`$ANCHOR_WORKSPACE\` → has-anchor=\`$HAS_ANCHOR\`"
+            echo "- Anchor workspace: \`$ANCHOR_WORKSPACE\` → has-anchor=\`$HAS_ANCHOR\` (Anchor.toml present: \`$ANCHOR_PRESENT\`)"
           } >> "$GITHUB_STEP_SUMMARY"
 
   clippy:
@@ -200,17 +196,146 @@ jobs:
           toolchain: ${{ inputs.rust-toolchain }}
           components: clippy
 
+      - name: Install clippy on workspace-pinned toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f rust-toolchain.toml && ! -f rust-toolchain ]]; then
+            echo "No workspace-pinned toolchain; relying on the one dtolnay installed."
+            exit 0
+          fi
+          # `head -n1`: rustup 1.28.0 appends an "active because:" line that awk would fold into the name.
+          ACTIVE=$(rustup show active-toolchain | head -n1 | awk '{print $1}')
+          if [[ -z "$ACTIVE" ]]; then
+            echo "::error::rust-toolchain[.toml] present but rustup couldn't resolve the pinned toolchain"
+            exit 1
+          fi
+          echo "Workspace pins '$ACTIVE'; installing it with clippy."
+          rustup toolchain install "$ACTIVE" --component clippy --no-self-update
+          rustup show
+
+      - name: Install libclang for clang-sys (if used)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f Cargo.lock ]] && grep -q '^name = "clang-sys"' Cargo.lock; then
+            echo "clang-sys detected in Cargo.lock — installing libclang-dev"
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends libclang-dev
+          fi
+
+      - name: Install protoc for prost/tonic build scripts (if used)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f Cargo.lock ]] && grep -qE '^name = "(prost-build|tonic-build)"' Cargo.lock; then
+            echo "prost-build/tonic-build detected in Cargo.lock — installing protobuf-compiler"
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
+          fi
+
+      - name: Check out submodules (if any)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f .gitmodules ]]; then
+            git submodule update --init --recursive --depth 1
+          fi
+
+      - name: Install libudev for hidapi (if used)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f Cargo.lock ]] && grep -q '^name = "hidapi"' Cargo.lock; then
+            echo "hidapi detected in Cargo.lock — installing libudev-dev"
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends libudev-dev pkg-config
+          fi
+
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: ${{ inputs.rust-workspace }}
 
-      - name: cargo clippy
+      # KEEP IN SYNC with the identically-named step in the solana-lints job: same `run:` body, only `env:` differs.
+      - name: Patch nightly-incompatible deps in Cargo.lock
+        shell: bash
         run: |
-          if [[ "${{ inputs.clippy-deny-warnings }}" == "true" ]]; then
-            cargo clippy --all-targets --all-features -- -D warnings
-          else
-            cargo clippy --all-targets --all-features
+          set -euo pipefail
+          [[ -f Cargo.lock ]] || { echo "No Cargo.lock; skipping."; exit 0; }
+          bump() {
+            echo "$1 $2 cannot build on a modern rustc; updating to $3"
+            # --precise exits non-zero when another package `=`-pins the crate (solana-frozen-abi requires ahash "=0.8.5"); never fail the gate on it.
+            cargo update --package "$1@$2" --precise "$3" || \
+              echo "::warning::could not bump $1 $2 to $3 (likely pinned by an exact '=' requirement); continuing with the locked version"
+          }
+          while read -r name version; do
+            case "$name" in
+              ahash)
+                case "$version" in
+                  0.7.[0-7]) bump "$name" "$version" 0.7.8 ;;
+                  0.8.[0-6]) bump "$name" "$version" 0.8.7 ;;
+                esac ;;
+              wasm-bindgen)
+                case "$version" in
+                  0.2.*)
+                    if (( ${version##*.} < 88 )); then
+                      bump "$name" "$version" 0.2.88
+                    fi ;;
+                esac ;;
+            esac
+          done < <(awk '/^name = "(ahash|wasm-bindgen)"$/ {
+                          name = $3; gsub(/"/, "", name)
+                          getline; gsub(/version = |"/, "")
+                          print name, $0
+                        }' Cargo.lock)
+
+      - name: cargo clippy
+        shell: bash
+        env:
+          DENY_WARNINGS: ${{ inputs.clippy-deny-warnings }}
+          FEATURE_SELECTION: ${{ inputs.clippy-features }}
+          EXTRA_ARGS: ${{ inputs.clippy-extra-args }}
+          ANCHOR_PRESENT: ${{ needs.detect.outputs.anchor-present }}
+        run: |
+          set -euo pipefail
+
+          SELECTION="$FEATURE_SELECTION"
+          if [[ "$SELECTION" == "auto" ]]; then
+            if [[ "$ANCHOR_PRESENT" == "true" ]]; then SELECTION="default"; else SELECTION="all"; fi
+            echo "clippy-features=auto → '$SELECTION' (Anchor.toml present: ${ANCHOR_PRESENT:-false})"
           fi
+          FEATURE_ARGS=()
+          case "$SELECTION" in
+            all)     FEATURE_ARGS=(--all-features) ;;
+            default) FEATURE_ARGS=() ;;
+            none)    FEATURE_ARGS=(--no-default-features) ;;
+            *)       FEATURE_ARGS=(--features "$SELECTION") ;;
+          esac
+
+          LINT_ARGS=()
+
+          # --check-cfg is nightly-only before rustc 1.80, and four repos still pin 1.69/1.75 toolchains.
+          rustc_mm=$(rustc -V | sed -E 's/^rustc ([0-9]+)\.([0-9]+).*/\1 \2/')
+          read -r rustc_major rustc_minor <<< "$rustc_mm"
+          if (( rustc_major > 1 || (rustc_major == 1 && rustc_minor >= 80) )); then
+            LINT_ARGS+=(
+              --check-cfg 'cfg(feature, values("anchor-debug","custom-heap","custom-panic","no-entrypoint","no-idl","no-log-ix-name","idl-build","cpi"))'
+              --check-cfg 'cfg(target_os, values("solana"))'
+            )
+          else
+            echo "::notice::rustc ${rustc_major}.${rustc_minor} predates --check-cfg (1.80); skipping cfg declarations, unexpected_cfgs does not exist on this toolchain"
+          fi
+          if [[ "$DENY_WARNINGS" == "true" ]]; then
+            LINT_ARGS+=(-D warnings)
+          fi
+          if [[ -n "$EXTRA_ARGS" ]]; then
+            # mapfile, not `read -a`: `read` stops at the first newline and would drop every later argument.
+            mapfile -t extra < <(printf '%s' "$EXTRA_ARGS" | xargs -n1 printf '%s\n')
+            LINT_ARGS+=("${extra[@]}")
+          fi
+
+          set -x
+          cargo clippy --all-targets "${FEATURE_ARGS[@]}" -- "${LINT_ARGS[@]}"
 
   cargo-deny:
     needs: detect
@@ -221,20 +346,21 @@ jobs:
         with:
           persist-credentials: false
 
-      # Write deny.toml inside ${{ github.workspace }} (mounted at the same
-      # path on host and inside the cargo-deny-action's docker container —
-      # /home/runner/work/<repo>/<repo> ↔ /github/workspace, with the
-      # action's working directory pinned to the workspace), then pass a
-      # relative `--config` path so it resolves identically in both. Writing
-      # to ${{ runner.temp }} doesn't work: that dir is mounted at
-      # /github/runner_temp inside the container, so an absolute host path
-      # like /home/runner/work/_temp/deny.toml doesn't exist there and
-      # cargo-deny silently falls back to its default config.
-      - name: Fetch cargo-deny config
+      # The config must land inside the workspace: the action's container cannot see a host path and silently falls back to its own defaults.
+      - name: Resolve cargo-deny config
         env:
           DENY_CONFIG_URL: ${{ inputs.deny-config }}
+          REPO_DENY_CONFIG: ${{ inputs.rust-workspace }}/deny.toml
           DENY_CONFIG_PATH: ${{ inputs.rust-workspace }}/.ci-deny.toml
-        run: curl -fsSL "$DENY_CONFIG_URL" -o "$DENY_CONFIG_PATH"
+        run: |
+          set -euo pipefail
+          if [[ -f "$REPO_DENY_CONFIG" ]]; then
+            echo "Using repo-local deny.toml: $REPO_DENY_CONFIG"
+            cp "$REPO_DENY_CONFIG" "$DENY_CONFIG_PATH"
+          else
+            echo "Fetching org cargo-deny config: $DENY_CONFIG_URL"
+            curl -fsSL "$DENY_CONFIG_URL" -o "$DENY_CONFIG_PATH"
+          fi
 
       - uses: EmbarkStudios/cargo-deny-action@5bb39ff5d5a0e94dc9e2dc94eced0c6129743a57 # v2
         with:
@@ -246,10 +372,6 @@ jobs:
     needs: detect
     if: needs.detect.outputs.has-anchor == 'true'
     runs-on: ubuntu-24.04
-    # X-Ray (and the `anchor` CLI it shells out to for IDL extraction) needs
-    # to run from the Anchor workspace so it can find Anchor.toml and the
-    # programs/ directory. Setup steps below override this to the repo root
-    # via `working-directory: ${{ github.workspace }}` where appropriate.
     defaults:
       run:
         working-directory: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
@@ -272,7 +394,10 @@ jobs:
       - name: Install anchor-cli
         if: steps.cache-anchor.outputs.cache-hit != 'true'
         working-directory: ${{ github.workspace }}
-        run: cargo install --locked anchor-cli --version ${{ inputs.anchor-cli-version }}
+        shell: bash
+        env:
+          ANCHOR_CLI_VERSION: ${{ inputs.anchor-cli-version }}
+        run: cargo install --locked anchor-cli --version "$ANCHOR_CLI_VERSION"
 
       - name: Install Sec3 X-Ray
         working-directory: ${{ github.workspace }}
@@ -298,9 +423,7 @@ jobs:
 
       - name: Verify tool installations
         working-directory: ${{ github.workspace }}
-        # Avoid piping `xray --help` under `pipefail`: `head -20` exits early
-        # and the SIGPIPE can fail the step. Use a brace group with a tail
-        # `|| true` so the fallback is genuinely best-effort.
+        # Braces and `|| true` keep SIGPIPE from `head` out of `pipefail`.
         run: |
           set -euo pipefail
           if ! xray --version 2>&1; then
@@ -310,19 +433,9 @@ jobs:
 
       - name: Run X-Ray
         env:
-          # anchor-programs-path is resolved against the job's
-          # working-directory (anchor-workspace), so the default `programs`
-          # works for the standard Anchor layout regardless of where the
-          # workspace lives in the repo.
           ANCHOR_PROGRAMS_PATH: ${{ inputs.anchor-programs-path || 'programs' }}
-        # X-Ray exits 0 even when sub-tools (anchor, the LLVM IR pass) emit
-        # errors and the final "no issues detected" path is reached. Capture
-        # output and fail on subprocess failures (`sh: <n>:`) and X-Ray's own
-        # fatal output (`Error:` / `ERROR:`). Do NOT match generic `: error: `
-        # MLIR/LLVM diagnostics — X-Ray's IR-lowering pass spuriously emits
-        # those on perfectly valid Anchor code (e.g. `'llvm.call' op calling
-        # function with void result must not produce values` on `&mut`
-        # references), making the gate unusable in practice.
+          XRAY_FAIL_ON_FINDINGS: ${{ inputs.xray-fail-on-findings }}
+        # X-Ray exits 0 on failure. Match only its own fatal lines: its IR-lowering pass emits `: error: ` diagnostics on valid Anchor code.
         run: |
           set -euo pipefail
           if [[ ! -d "$ANCHOR_PROGRAMS_PATH" ]]; then
@@ -342,6 +455,60 @@ jobs:
             exit 1
           fi
 
+          # X-Ray's own vulnerability findings live in a summary block and never
+          # touched the patterns above, so the job passed no matter what it found.
+          SUMMARY=$(sed -n '/[Ss]ummary of potential vulnerabilities/,$p' "$LOG")
+          {
+            echo "## Sec3 X-Ray"
+            echo ""
+            if [[ -n "$SUMMARY" ]]; then
+              echo '```'
+              echo "$SUMMARY"
+              echo '```'
+            else
+              echo "No findings summary in the output."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ -z "$SUMMARY" ]]; then
+            echo "::warning::X-Ray printed no findings summary — its output format may have changed, so findings cannot be detected. Check the log and the xray-version input."
+            exit 0
+          fi
+
+          # X-Ray's summary block (pkg/reporter/reporter.go showSummary) is either the literal
+          # "No issues detected" or one `%2d <category> issues` line per non-zero category, repeated
+          # per executable. Matching those three categories exactly avoids both directions of error:
+          # a severity-word heuristic neither fires on this output nor stays clear of `Critical: 0`.
+          FINDINGS=$(printf '%s\n' "$SUMMARY" \
+            | grep -nE '^[[:space:]]*[0-9]+[[:space:]]+(untrustful account|unsafe operation|cosplay account) issues[[:space:]]*$' \
+            || true)
+
+          # Per line, not per summary: a clean block for one program must not vouch for an
+          # unrecognised line under another.
+          UNRECOGNISED=$(printf '%s\n' "$SUMMARY" \
+            | grep -vE '^([[:space:]]*|-+The summary of potential vulnerabilities in .*-+)$' \
+            | grep -vE '^[[:space:]]+No issues detected[[:space:]]*$' \
+            | grep -vE '^[[:space:]]*[0-9]+[[:space:]]+(untrustful account|unsafe operation|cosplay account) issues[[:space:]]*$' \
+            || true)
+
+          if [[ -n "$UNRECOGNISED" ]]; then
+            echo "::warning::X-Ray's summary has lines matching neither 'No issues detected' nor a known issue-count line — its output format may have changed, so findings cannot be reliably detected. Check the log and the xray-version input."
+            while IFS= read -r line; do
+              echo "::warning::X-Ray (unrecognised): $line"
+            done <<< "$UNRECOGNISED"
+          fi
+
+          if [[ -n "$FINDINGS" ]]; then
+            while IFS= read -r line; do
+              echo "::error::X-Ray: $line"
+            done <<< "$FINDINGS"
+            if [[ "$XRAY_FAIL_ON_FINDINGS" == "true" ]]; then
+              echo "::error::X-Ray reported potential vulnerabilities. Set xray-fail-on-findings: false to report without failing."
+              exit 1
+            fi
+            echo "::warning::X-Ray reported potential vulnerabilities; not failing because xray-fail-on-findings is false."
+          fi
+
   solana-lints:
     needs: detect
     if: needs.detect.outputs.has-anchor == 'true'
@@ -354,18 +521,11 @@ jobs:
         with:
           persist-credentials: false
 
-      # Install stable first, then nightly. Order matters: dtolnay/rust-toolchain
-      # makes the most-recently-installed toolchain the rustup default. We want
-      # nightly as the default for the lint builds and the `cargo dylint` run,
-      # but cargo-dylint/dylint-link are user-space tools that don't need
-      # nightly. Install stable, install the dylint tools (taiki-e/install-action
-      # falls back to `cargo install` when no prebuilt is published, picking up
-      # whatever rustc is the active default), then install nightly.
+      # Stable before nightly: dtolnay makes the last-installed toolchain the rustup default, and dylint needs the nightly to win.
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
           toolchain: stable
 
-      # cargo-dylint pinned via input; see input description for rationale.
       - name: Install dylint
         uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
         with:
@@ -376,112 +536,148 @@ jobs:
           toolchain: ${{ inputs.solana-lints-toolchain }}
           components: rustc-dev, llvm-tools-preview
 
+      - name: Install libclang for clang-sys (if used)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f Cargo.lock ]] && grep -q '^name = "clang-sys"' Cargo.lock; then
+            echo "clang-sys detected in Cargo.lock — installing libclang-dev"
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends libclang-dev
+          fi
+
+      - name: Install protoc for prost/tonic build scripts (if used)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f Cargo.lock ]] && grep -qE '^name = "(prost-build|tonic-build)"' Cargo.lock; then
+            echo "prost-build/tonic-build detected in Cargo.lock — installing protobuf-compiler"
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
+          fi
+
+      - name: Check out submodules (if any)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f .gitmodules ]]; then
+            git submodule update --init --recursive --depth 1
+          fi
+
+      - name: Install libudev for hidapi (if used)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f Cargo.lock ]] && grep -q '^name = "hidapi"' Cargo.lock; then
+            echo "hidapi detected in Cargo.lock — installing libudev-dev"
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends libudev-dev pkg-config
+          fi
+
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
 
-      - name: Clone solana-lints
+      # KEEP IN SYNC with the identically-named step in the clippy job: same `run:` body, only `env:` differs.
+      - name: Patch nightly-incompatible deps in Cargo.lock
+        shell: bash
         env:
+          RUSTUP_TOOLCHAIN: ${{ inputs.solana-lints-toolchain }}
+        run: |
+          set -euo pipefail
+          [[ -f Cargo.lock ]] || { echo "No Cargo.lock; skipping."; exit 0; }
+          bump() {
+            echo "$1 $2 cannot build on a modern rustc; updating to $3"
+            # --precise exits non-zero when another package `=`-pins the crate (solana-frozen-abi requires ahash "=0.8.5"); never fail the gate on it.
+            cargo update --package "$1@$2" --precise "$3" || \
+              echo "::warning::could not bump $1 $2 to $3 (likely pinned by an exact '=' requirement); continuing with the locked version"
+          }
+          while read -r name version; do
+            case "$name" in
+              ahash)
+                case "$version" in
+                  0.7.[0-7]) bump "$name" "$version" 0.7.8 ;;
+                  0.8.[0-6]) bump "$name" "$version" 0.8.7 ;;
+                esac ;;
+              wasm-bindgen)
+                case "$version" in
+                  0.2.*)
+                    if (( ${version##*.} < 88 )); then
+                      bump "$name" "$version" 0.2.88
+                    fi ;;
+                esac ;;
+            esac
+          done < <(awk '/^name = "(ahash|wasm-bindgen)"$/ {
+                          name = $3; gsub(/"/, "", name)
+                          getline; gsub(/version = |"/, "")
+                          print name, $0
+                        }' Cargo.lock)
+
+      - name: Clone dylint lints
+        id: lints-checkout
+        env:
+          REPO: ${{ inputs.solana-lints-repo }}
           REF: ${{ inputs.solana-lints-ref }}
         run: |
           set -euo pipefail
-          git clone https://github.com/crytic/solana-lints.git /tmp/solana-lints
-          git -C /tmp/solana-lints checkout "$REF"
+          git clone "$REPO" /tmp/dylint-lints
+          git -C /tmp/dylint-lints checkout "$REF"
+          echo "sha=$(git -C /tmp/dylint-lints rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Cache built lint libraries
+      - name: Restore built lint libraries
         id: lints-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: /tmp/solana-lints/target/release
-          key: solana-lints-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ inputs.solana-lints-ref }}
+          path: /tmp/dylint-lints/target/release
+          # Cache entries are immutable, so a run-unique key plus a prefix restore is the only way
+          # an entry that turns out to hold no libraries can ever be superseded: the next rebuild
+          # writes a new key, and the prefix match then resolves to it instead.
+          key: dylint-lints-v4-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ steps.lints-checkout.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: dylint-lints-v4-${{ runner.os }}-${{ inputs.solana-lints-toolchain }}-${{ steps.lints-checkout.outputs.sha }}-
 
+      # A restore that yields no libraries rebuilds rather than fails: dylint would
+      # otherwise load zero lints and exit 0 — a green gate that checked nothing.
       - name: Build lints
-        if: steps.lints-cache.outputs.cache-hit != 'true'
-        working-directory: /tmp/solana-lints
-        # solana-lints is not a single Cargo workspace (root [workspace] only
-        # contains `crate`, not `lints/*`), so each lint must be built
-        # independently. Set CARGO_TARGET_DIR so all lints share one target
-        # dir — otherwise each lint builds into lints/<name>/target/release/
-        # and the cache path + DYLINT_LIBRARY_PATH below don't match reality.
+        id: build-lints
+        working-directory: /tmp/dylint-lints
+        shell: bash
         env:
-          CARGO_TARGET_DIR: /tmp/solana-lints/target
-        run: |
-          set -euo pipefail
-          for lint in lints/*/; do
-            (cd "$lint" && cargo build --release)
-          done
-
-      - name: Run dylint
-        env:
-          DYLINT_LIBRARY_PATH: /tmp/solana-lints/target/release
-        run: cargo dylint --all -- --all-targets
-
-  verifiable-build:
-    needs: detect
-    # Runs automatically on push to the default branch, and on-demand via
-    # workflow_dispatch on any branch (useful for ad-hoc release builds and
-    # for testing this workflow on feature branches).
-    if: >-
-      needs.detect.outputs.has-anchor == 'true' && (
-        (github.event_name == 'push' &&
-         github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
-        || github.event_name == 'workflow_dispatch'
-      )
-    runs-on: ubuntu-24.04
-    defaults:
-      run:
-        working-directory: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
-        with:
-          persist-credentials: false
-
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
-        with:
-          toolchain: stable
-
-      - name: Cache solana-verify binary
-        id: cache-solana-verify
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cargo/bin/solana-verify
-          key: solana-verify-${{ runner.os }}-${{ inputs.solana-verify-version }}
-
-      - name: Install solana-verify
-        if: steps.cache-solana-verify.outputs.cache-hit != 'true'
-        working-directory: ${{ github.workspace }}
-        run: cargo install --locked solana-verify --version ${{ inputs.solana-verify-version }}
-
-      - name: Verifiable build
-        run: solana-verify build
-
-      - name: Compute executable hashes
+          DYLINT_LIBRARY_PATH: /tmp/dylint-lints/target/release
+          MATCHED_KEY: ${{ steps.lints-cache.outputs.cache-matched-key }}
         run: |
           set -euo pipefail
           shopt -s nullglob
-          binaries=(target/deploy/*.so)
-          if [[ ${#binaries[@]} -eq 0 ]]; then
-            echo "::error::solana-verify build produced no .so files in target/deploy"
+          # dylint only loads files named lib<name>@<toolchain>.so; a bare lib<name>.so is invisible to it.
+          libs=("$DYLINT_LIBRARY_PATH"/lib*@*.so)
+          rebuilt=false
+          if [[ ${#libs[@]} -eq 0 ]]; then
+            if [[ -n "$MATCHED_KEY" ]]; then
+              echo "::warning::Cache entry $MATCHED_KEY restored no lib*@*.so; rebuilding and saving under a fresh key."
+            fi
+            # --workspace: the repo root is itself a package, so a bare build skips the lints/* cdylibs
+            cargo build --release --workspace
+            libs=("$DYLINT_LIBRARY_PATH"/lib*@*.so)
+            rebuilt=true
+          fi
+          if [[ ${#libs[@]} -eq 0 ]]; then
+            echo "::error::No dylint libraries in $DYLINT_LIBRARY_PATH after building — check solana-lints-ref."
             exit 1
           fi
-          {
-            echo "## Verifiable build"
-            echo ""
-            echo "solana-verify \`${{ inputs.solana-verify-version }}\`"
-            echo ""
-            echo "| Program | sha256 |"
-            echo "| --- | --- |"
-            for so in "${binaries[@]}"; do
-              name=$(basename "$so" .so)
-              hash=$(solana-verify get-executable-hash "$so")
-              echo "| \`$name\` | \`$hash\` |"
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo "rebuilt=$rebuilt" >> "$GITHUB_OUTPUT"
+          printf 'loaded %d lint library(ies):\n' "${#libs[@]}"
+          printf '  %s\n' "${libs[@]##*/}"
 
-      - name: Upload program binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      # Keyed on whether a build actually ran, not on the restore: the path this exists for is a
+      # restore that hit and yielded nothing, which the old cache-hit gate skipped.
+      - name: Save built lint libraries
+        if: steps.build-lints.outputs.rebuilt == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          name: verifiable-build-${{ github.sha }}
-          path: ${{ inputs.anchor-workspace || inputs.rust-workspace }}/target/deploy/*.so
-          if-no-files-found: error
-          retention-days: 90
+          path: /tmp/dylint-lints/target/release
+          key: ${{ steps.lints-cache.outputs.cache-primary-key }}
+
+      - name: Run dylint
+        env:
+          DYLINT_LIBRARY_PATH: /tmp/dylint-lints/target/release
+          RUSTUP_TOOLCHAIN: ${{ inputs.solana-lints-toolchain }}
+        run: cargo dylint --all -- --all-targets
