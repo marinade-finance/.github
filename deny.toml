@@ -80,6 +80,9 @@ allow = [
   "BSD-2-Clause",
   "BSD-3-Clause",
   "ISC",           # aws-lc-rs/-sys, libloading, forwarded-header-value
+  # Boost. Only ever an OR-alternative today (ryu, whoami, wasite all offer Apache-2.0 too), so
+  # nothing currently depends on this entry; allowed so a crate offering it alone is not a surprise.
+  "BSL-1.0",
   # Public-domain-equivalents, required outright (not as OR-alternatives).
   "0BSD",          # enum-iterator, enum-iterator-derive
   "CC0-1.0",       # constant_time_eq 0.1.5, keccak, tiny-keccak
