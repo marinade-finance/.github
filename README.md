@@ -199,7 +199,7 @@ jobs:
   verify:
     uses: marinade-finance/.github/.github/workflows/verify-deployments.yml@main
     with:
-      library-name: my-program   # required unless every workspace member is SBF-buildable
+      library-name: my_program   # the crate's [lib] name, not the package name; required unless every workspace member is SBF-buildable
 ```
 
 Then trigger it from the **Actions** tab. RPC URLs default to the public Solana endpoints (`https://api.mainnet-beta.solana.com` and the devnet/testnet equivalents) rather than CLI monikers, so resolution never depends on a Solana CLI config on the runner; override per-cluster via the `mainnet-rpc-url` / `devnet-rpc-url` / `testnet-rpc-url` inputs if you need a private RPC. `[programs.localnet]` entries are skipped (no deployment to compare against) — but a repo declaring *only* `[programs.localnet]` has nothing to verify at all, and `require-programs-section` defaults to true, so this job hard-fails there. Those repos want `require-programs-section: false`; see the On-chain verification column above.

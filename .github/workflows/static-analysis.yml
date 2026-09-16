@@ -205,9 +205,19 @@ jobs:
             exit 0
           fi
           # `head -n1`: rustup 1.28.0 appends an "active because:" line that awk would fold into the name.
-          ACTIVE=$(rustup show active-toolchain | head -n1 | awk '{print $1}')
+          # `|| true`: rustup exits non-zero when the pinned toolchain is not installed and
+          # auto-install is off (RUSTUP_AUTO_INSTALL=0, honoured since 1.28), or when the channel
+          # does not exist at all. Under `set -e` that aborts on a raw stack trace before the
+          # diagnostic below ever runs.
+          show_active() { { rustup show active-toolchain 2>/dev/null || true; } | head -n1 | awk '{print $1}'; }
+          ACTIVE=$(show_active)
           if [[ -z "$ACTIVE" ]]; then
-            echo "::error::rust-toolchain[.toml] present but rustup couldn't resolve the pinned toolchain"
+            # No toolchain name: install whatever the toolchain file selects, then re-read.
+            rustup toolchain install --no-self-update || true
+            ACTIVE=$(show_active)
+          fi
+          if [[ -z "$ACTIVE" ]]; then
+            echo "::error::rust-toolchain[.toml] present but rustup could not resolve or install the pinned toolchain — check that its channel exists"
             exit 1
           fi
           echo "Workspace pins '$ACTIVE'; installing it with clippy."
