@@ -8,14 +8,16 @@ A reusable workflow that runs static analysis on Rust and Anchor codebases. It a
 
 | Tool | Purpose | Runs when |
 | --- | --- | --- |
-| **clippy** | Rust linter (idioms, perf, common bugs, anti-patterns) | `<rust-workspace>/Cargo.toml` present (workspace root manifest) |
-| **cargo-deny** | Supply chain: RustSec CVE advisories, license allowlist, banned/yanked crates, duplicates | `<rust-workspace>/Cargo.toml` present (workspace root manifest) |
-| **Sec3 X-Ray** | Solana dataflow analyzer: signer/owner checks, PDA seed reuse, arbitrary CPI, account substitution, lamport math overflow | `<anchor-workspace>/Anchor.toml` present |
-| **solana-lints** | otter-sec Dylint-based Anchor pattern lints (insecure init, bump seed canonicalization, audit-derived antipatterns) | `<anchor-workspace>/Anchor.toml` present |
+| **clippy** | Rust linter (idioms, perf, common bugs, anti-patterns) | `<rust-workspace>/Cargo.toml` present (workspace root manifest) and resolving to ≥1 package |
+| **cargo-deny** | Supply chain: RustSec CVE advisories, license allowlist, banned/yanked crates, duplicates | `<rust-workspace>/Cargo.toml` present (workspace root manifest) and resolving to ≥1 package |
+| **Sec3 X-Ray** | Solana dataflow analyzer: signer/owner checks, PDA seed reuse, arbitrary CPI, account substitution, lamport math overflow | `<anchor-workspace>/Anchor.toml` present and the workspace resolving to ≥1 package |
+| **solana-lints** | otter-sec Dylint-based Anchor pattern lints (insecure init, bump seed canonicalization, audit-derived antipatterns) | `<anchor-workspace>/Anchor.toml` present and the workspace resolving to ≥1 package |
 
 Reproducible builds are **not** part of this workflow — see [Verifiable build](#verifiable-build-verifiable-buildyml) below for why, and how to enable them per repo.
 
 Anchor detection is `Anchor.toml`-only — Cargo dependencies on `anchor-lang` / `anchor-client` are not used as a signal, since off-chain services that pull in Anchor crates for deserialization are not Anchor programs.
+
+A manifest resolving to zero packages — a virtual `Cargo.toml` whose `members` glob matches nothing, as in a TypeScript repo that keeps one so Anchor can run — counts as no Rust, because every cargo job aborts on it with `the workspace has no members`. Detection fails open: if `cargo metadata` cannot read the manifest at all, the jobs run and report the real problem themselves.
 
 ### Usage (default)
 
