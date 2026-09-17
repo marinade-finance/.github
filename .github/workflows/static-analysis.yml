@@ -141,6 +141,20 @@ jobs:
             fi
           fi
 
+          # every cargo job dies on a members-less virtual manifest; `unknown` keeps the old behaviour
+          cargo_package_count() {
+            if [[ ! -f "$1/Cargo.toml" ]]; then
+              echo unknown
+              return
+            fi
+            # stable, not the workspace pin: detect only parses manifests, and rustup would install the pin
+            RUSTUP_TOOLCHAIN=stable cargo metadata --manifest-path "$1/Cargo.toml" \
+              --no-deps --format-version 1 2>/dev/null | jq '.packages | length' || echo unknown
+          }
+
+          RUST_PACKAGES=$(cargo_package_count "$RUST_WORKSPACE")
+          ANCHOR_PACKAGES=$(cargo_package_count "$ANCHOR_WORKSPACE")
+
           if [[ "$RUN_RUST" == "true" ]]; then
             if [[ ! -f "$RUST_WORKSPACE/Cargo.toml" ]]; then
               echo "::error::run-rust='true' but Cargo.toml not found at '$RUST_WORKSPACE/Cargo.toml'"
@@ -149,7 +163,7 @@ jobs:
             HAS_RUST=true
           elif [[ "$RUN_RUST" == "false" ]]; then
             HAS_RUST=false
-          elif [[ -f "$RUST_WORKSPACE/Cargo.toml" ]]; then
+          elif [[ -f "$RUST_WORKSPACE/Cargo.toml" && "$RUST_PACKAGES" != "0" ]]; then
             HAS_RUST=true
           else
             HAS_RUST=false
@@ -163,7 +177,7 @@ jobs:
 
           if [[ "$RUN_SOLANA" == "true" ]]; then
             HAS_ANCHOR=true
-          elif [[ "$RUN_SOLANA" == "false" ]]; then
+          elif [[ "$RUN_SOLANA" == "false" || "$ANCHOR_PACKAGES" == "0" ]]; then
             HAS_ANCHOR=false
           else
             HAS_ANCHOR=$ANCHOR_PRESENT
@@ -175,8 +189,8 @@ jobs:
 
           {
             echo "## Detection results"
-            echo "- Rust workspace: \`$RUST_WORKSPACE\` → has-rust=\`$HAS_RUST\`"
-            echo "- Anchor workspace: \`$ANCHOR_WORKSPACE\` → has-anchor=\`$HAS_ANCHOR\` (Anchor.toml present: \`$ANCHOR_PRESENT\`)"
+            echo "- Rust workspace: \`$RUST_WORKSPACE\` → has-rust=\`$HAS_RUST\` (cargo packages: \`$RUST_PACKAGES\`)"
+            echo "- Anchor workspace: \`$ANCHOR_WORKSPACE\` → has-anchor=\`$HAS_ANCHOR\` (Anchor.toml present: \`$ANCHOR_PRESENT\`, cargo packages: \`$ANCHOR_PACKAGES\`)"
           } >> "$GITHUB_STEP_SUMMARY"
 
   clippy:
