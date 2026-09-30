@@ -17,7 +17,7 @@ Reproducible builds are **not** part of this workflow — see [Verifiable build]
 
 Anchor detection is `Anchor.toml`-only — Cargo dependencies on `anchor-lang` / `anchor-client` are not used as a signal, since off-chain services that pull in Anchor crates for deserialization are not Anchor programs.
 
-A manifest resolving to zero packages — a virtual `Cargo.toml` whose `members` glob matches nothing, as in a TypeScript repo that keeps one so Anchor can run — counts as no Rust, because every cargo job aborts on it with `the workspace has no members`. Detection fails open: if `cargo metadata` cannot read the manifest at all, the jobs run and report the real problem themselves.
+A missing `Cargo.toml`, or one resolving to zero packages — a virtual manifest whose `members` glob matches nothing, as in a TypeScript repo that keeps one so Anchor can run — counts as no Rust, even next to an `Anchor.toml`, because every cargo job aborts on it. Detection fails open: if `cargo metadata` cannot read the manifest at all, the jobs run and report the real problem themselves.
 
 ### Usage (default)
 
