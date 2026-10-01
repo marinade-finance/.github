@@ -141,10 +141,10 @@ jobs:
             fi
           fi
 
-          # every cargo job dies on a members-less virtual manifest; `unknown` keeps the old behaviour
+          # cargo jobs die on a missing or members-less manifest; `unknown` keeps the old behaviour
           cargo_package_count() {
             if [[ ! -f "$1/Cargo.toml" ]]; then
-              echo unknown
+              echo 0
               return
             fi
             # stable, not the workspace pin: detect only parses manifests, and rustup would install the pin
