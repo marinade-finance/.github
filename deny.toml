@@ -136,6 +136,8 @@ allow-git = [
   "https://github.com/solana-labs/solana-program-library",
   # marinade-sdk needs anchor 0.25 from git; the crates.io release of that vintage lacks fixes it needs. RETIRE when marinade-sdk moves to a published anchor release.
   "https://github.com/coral-xyz/anchor",
+  # agave >= 4.3 solana-ledger needs anza's rocksdb fork via [patch.crates-io] (solana-snapshot-parser). RETIRE when agave drops that patch.
+  "https://github.com/anza-xyz/rust-rocksdb",
 ]
 
 # First-party crates are consumed as git dependencies pinned to a tag/branch before they are published; one org entry beats a list that grows with every internal crate. RETIRE when they are consumed by version.
