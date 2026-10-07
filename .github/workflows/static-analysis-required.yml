@@ -20,3 +20,4 @@ jobs:
       clippy-deny-warnings: ${{ vars.STATIC_ANALYSIS_CLIPPY_DENY_WARNINGS != 'false' }}
       clippy-features:      ${{ vars.STATIC_ANALYSIS_CLIPPY_FEATURES      || 'auto' }}
       clippy-extra-args:    ${{ vars.STATIC_ANALYSIS_CLIPPY_EXTRA_ARGS    || '' }}
+      xray-required:        ${{ vars.STATIC_ANALYSIS_XRAY_REQUIRED == 'true' }}
