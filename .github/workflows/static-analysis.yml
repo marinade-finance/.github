@@ -27,7 +27,7 @@ on:
         default: ""
         type: string
       anchor-programs-path:
-        description: "Path Sec3 X-Ray scans, resolved relative to anchor-workspace (the sec3-xray job's working directory). When empty, defaults to `programs` (i.e. <anchor-workspace>/programs)."
+        description: "Path Sec3 X-Ray scans and whose workspace packages solana-lints lints, resolved relative to anchor-workspace (both jobs' working directory). When empty, defaults to `programs` (i.e. <anchor-workspace>/programs)."
         required: false
         default: ""
         type: string
@@ -700,8 +700,21 @@ jobs:
           path: /tmp/dylint-lints/target/release
           key: ${{ steps.lints-cache.outputs.cache-primary-key }}
 
+      # Programs only: off-chain members can pull deps whose rust-version is newer than the lint nightly.
       - name: Run dylint
         env:
           DYLINT_LIBRARY_PATH: /tmp/dylint-lints/target/release
           RUSTUP_TOOLCHAIN: ${{ inputs.solana-lints-toolchain }}
-        run: cargo dylint --all -- --all-targets
+          ANCHOR_PROGRAMS_PATH: ${{ inputs.anchor-programs-path || 'programs' }}
+        run: |
+          set -euo pipefail
+          programs_dir=$(realpath -m "$ANCHOR_PROGRAMS_PATH")
+          mapfile -t packages < <(cargo metadata --no-deps --format-version 1 \
+            | jq -r --arg dir "$programs_dir/" '.packages[] | select(.manifest_path | startswith($dir)) | .name')
+          if [[ ${#packages[@]} -eq 0 ]]; then
+            echo "::notice::No workspace package under '$ANCHOR_PROGRAMS_PATH'; linting the whole workspace."
+            cargo dylint --all -- --all-targets
+            exit 0
+          fi
+          printf 'linting package: %s\n' "${packages[@]}"
+          cargo dylint --all -- --all-targets "${packages[@]/#/--package=}"

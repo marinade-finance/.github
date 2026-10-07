@@ -64,7 +64,7 @@ All inputs are optional.
 | `run-solana` | `auto` | Force on/off: `'true'` / `'false'` / `'auto'` |
 | `rust-workspace` | `.` | Path to Rust workspace root (must contain `Cargo.toml` for clippy/cargo-deny to run) |
 | `anchor-workspace` | `""` (= `rust-workspace`) | Path to Anchor workspace root (must contain `Anchor.toml`). Set when Anchor lives outside the Rust workspace |
-| `anchor-programs-path` | `""` (= `programs`, resolved relative to `anchor-workspace`) | Path Sec3 X-Ray scans, resolved relative to `anchor-workspace`. Override only if your programs live somewhere other than `programs/` under the Anchor workspace |
+| `anchor-programs-path` | `""` (= `programs`, resolved relative to `anchor-workspace`) | Path Sec3 X-Ray scans and whose workspace packages solana-lints lints (the whole workspace when none are found there), resolved relative to `anchor-workspace`. Override only if your programs live somewhere other than `programs/` under the Anchor workspace |
 | `rust-toolchain` | `stable` | Toolchain for clippy |
 | `solana-lints-toolchain` | `nightly-2025-09-18` | Nightly for the dylint lints; must match the lints repo's own `rust-toolchain`. Forced via `RUSTUP_TOOLCHAIN` so a workspace pin can't override it |
 | `clippy-deny-warnings` | `true` | Set `false` during initial cleanup |
