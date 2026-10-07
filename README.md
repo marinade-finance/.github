@@ -64,12 +64,13 @@ All inputs are optional.
 | `run-solana` | `auto` | Force on/off: `'true'` / `'false'` / `'auto'` |
 | `rust-workspace` | `.` | Path to Rust workspace root (must contain `Cargo.toml` for clippy/cargo-deny to run) |
 | `anchor-workspace` | `""` (= `rust-workspace`) | Path to Anchor workspace root (must contain `Anchor.toml`). Set when Anchor lives outside the Rust workspace |
-| `anchor-programs-path` | `""` (= `programs`, resolved relative to `anchor-workspace`) | Path Sec3 X-Ray scans, resolved relative to `anchor-workspace`. Override only if your programs live somewhere other than `programs/` under the Anchor workspace |
+| `anchor-programs-path` | `""` (= `programs`, resolved relative to `anchor-workspace`) | Path Sec3 X-Ray scans and whose workspace packages solana-lints lints (the whole workspace when none are found there), resolved relative to `anchor-workspace`. Override only if your programs live somewhere other than `programs/` under the Anchor workspace |
 | `rust-toolchain` | `stable` | Toolchain for clippy |
 | `solana-lints-toolchain` | `nightly-2025-09-18` | Nightly for the dylint lints; must match the lints repo's own `rust-toolchain`. Forced via `RUSTUP_TOOLCHAIN` so a workspace pin can't override it |
 | `clippy-deny-warnings` | `true` | Set `false` during initial cleanup |
 | `xray-version` | `v0.0.6` | Sec3 X-Ray release tag to install |
 | `xray-sha256` | `""` (skip) | SHA256 of the X-Ray linux-amd64 tarball. When set, the downloaded archive is verified against this checksum before extraction. Strongly recommended for supply-chain safety; leave empty to skip verification (a warning is logged) |
+| `xray-required` | `false` | Fail the `sec3-xray` job when the X-Ray scan step fails. When `false`, failures show as annotations and the job stays green; install failures still fail it |
 | `anchor-cli-version` | `0.31.1` | `anchor-cli` version installed for the sec3-xray job (X-Ray shells out to `anchor` for IDL extraction) |
 | `solana-lints-repo` | `https://github.com/otter-sec/anchor-lints.git` | Git URL of the dylint lints to build, passed straight to `git clone`. otter-sec is actively maintained, Anchor-focused, and a single Cargo workspace; the legacy `crytic`/`trailofbits` `solana-lints` is dormant and stuck on `nightly-2025-01-09` (rustc 1.86), too old for workspaces whose deps need rustc 1.88+ |
 | `solana-lints-ref` | (pinned SHA) | Git ref of `solana-lints-repo` to build lints from; must be compatible with `solana-lints-toolchain`, so bump the two together |
@@ -123,7 +124,7 @@ ignore:
 After rolling out, add the relevant jobs as required status checks in each consumer repo:
 
 - All Rust repos: `clippy`, `cargo-deny`
-- Anchor repos: also `sec3-xray`, `solana-lints`
+- Anchor repos: also `solana-lints`, and `sec3-xray` when `xray-required` is `true` (repo variable `STATIC_ANALYSIS_XRAY_REQUIRED` for the org-required workflow); otherwise it stays green
 
 Skipped jobs render as gray "skipped" rather than failures, so a TS-only repo with this workflow still goes green.
 

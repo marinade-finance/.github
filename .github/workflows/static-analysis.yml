@@ -27,7 +27,7 @@ on:
         default: ""
         type: string
       anchor-programs-path:
-        description: "Path Sec3 X-Ray scans, resolved relative to anchor-workspace (the sec3-xray job's working directory). When empty, defaults to `programs` (i.e. <anchor-workspace>/programs)."
+        description: "Path Sec3 X-Ray scans and whose workspace packages solana-lints lints, resolved relative to anchor-workspace (both jobs' working directory). When empty, defaults to `programs` (i.e. <anchor-workspace>/programs)."
         required: false
         default: ""
         type: string
@@ -88,12 +88,17 @@ on:
         type: string
       xray-fail-on-findings:
         description: >-
-          Fail the sec3-xray job when X-Ray reports potential vulnerabilities.
+          Fail the X-Ray step (and the job, with xray-required) when X-Ray reports potential vulnerabilities.
           Its own exit code is always 0 and its findings never matched the fatal-error
           patterns, so before this the check could not fail on a finding. Set false to
           annotate without failing while a repo works through a backlog.
         required: false
         default: true
+        type: boolean
+      xray-required:
+        description: "Fail the sec3-xray job when the X-Ray scan step fails (scan errors or, with xray-fail-on-findings, findings). When false, the failure is annotated and the job stays green. Install failures always fail the job."
+        required: false
+        default: false
         type: boolean
       deny-config:
         description: "URL of the cargo-deny config to use. Pin to a tag/SHA for stable behavior across reusable-workflow versions."
@@ -456,6 +461,7 @@ jobs:
           anchor --version
 
       - name: Run X-Ray
+        continue-on-error: ${{ !inputs.xray-required }}
         env:
           ANCHOR_PROGRAMS_PATH: ${{ inputs.anchor-programs-path || 'programs' }}
           XRAY_FAIL_ON_FINDINGS: ${{ inputs.xray-fail-on-findings }}
@@ -527,7 +533,7 @@ jobs:
               echo "::error::X-Ray: $line"
             done <<< "$FINDINGS"
             if [[ "$XRAY_FAIL_ON_FINDINGS" == "true" ]]; then
-              echo "::error::X-Ray reported potential vulnerabilities. Set xray-fail-on-findings: false to report without failing."
+              echo "::error::X-Ray reported potential vulnerabilities."
               exit 1
             fi
             echo "::warning::X-Ray reported potential vulnerabilities; not failing because xray-fail-on-findings is false."
@@ -700,8 +706,25 @@ jobs:
           path: /tmp/dylint-lints/target/release
           key: ${{ steps.lints-cache.outputs.cache-primary-key }}
 
+      # Programs only: off-chain members can pull deps whose rust-version is newer than the lint nightly.
       - name: Run dylint
         env:
           DYLINT_LIBRARY_PATH: /tmp/dylint-lints/target/release
           RUSTUP_TOOLCHAIN: ${{ inputs.solana-lints-toolchain }}
-        run: cargo dylint --all -- --all-targets
+          ANCHOR_PROGRAMS_PATH: ${{ inputs.anchor-programs-path || 'programs' }}
+        run: |
+          set -euo pipefail
+          if [[ ! -d "$ANCHOR_PROGRAMS_PATH" ]]; then
+            echo "::error::anchor-programs-path '$ANCHOR_PROGRAMS_PATH' does not exist"
+            exit 1
+          fi
+          programs_dir=$(realpath "$ANCHOR_PROGRAMS_PATH")
+          metadata=$(cargo metadata --no-deps --format-version 1)
+          mapfile -t packages < <(jq -r --arg dir "$programs_dir/" \
+            '.packages[] | select(.manifest_path | startswith($dir)) | .name' <<< "$metadata")
+          if [[ ${#packages[@]} -eq 0 ]]; then
+            echo "::notice::No workspace package under '$ANCHOR_PROGRAMS_PATH'; linting the whole workspace."
+          else
+            printf 'linting package: %s\n' "${packages[@]}"
+          fi
+          cargo dylint --all -- --all-targets "${packages[@]/#/--package=}"
