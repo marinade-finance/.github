@@ -106,8 +106,11 @@ on:
         default: "https://raw.githubusercontent.com/marinade-finance/.github/main/deny.toml"
         type: string
     secrets:
-      CARGO_GIT_SSH_KEY:
-        description: "Private SSH key (read-only deploy key) for Cargo git dependencies on private repos (ssh://git@github.com/...). Optional; without it only public dependencies resolve."
+      CARGO_GIT_APP_CLIENT_ID:
+        description: "Client ID of a GitHub App with read access to the private repos that Cargo git dependencies point at. Optional; without it (and CARGO_GIT_APP_PRIVATE_KEY) only public dependencies resolve."
+        required: false
+      CARGO_GIT_APP_PRIVATE_KEY:
+        description: "Private key of that GitHub App."
         required: false
 
 jobs:
@@ -209,25 +212,37 @@ jobs:
     defaults:
       run:
         working-directory: ${{ inputs.rust-workspace }}
+    env:
+      CARGO_GIT_APP: ${{ secrets.CARGO_GIT_APP_CLIENT_ID != '' && secrets.CARGO_GIT_APP_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           persist-credentials: false
 
-      - name: Load SSH key for private Cargo git dependencies
+      # Private git dependencies: a short-lived read-only App token, revoked before clippy runs dependency build scripts.
+      - name: Create token for private Cargo git dependencies
+        id: cargo-git-token
+        if: env.CARGO_GIT_APP == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.CARGO_GIT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CARGO_GIT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
+          skip-token-revoke: true
+
+      - name: Route Cargo git fetches through the token
+        if: env.CARGO_GIT_APP == 'true'
         env:
-          CARGO_GIT_SSH_KEY: ${{ secrets.CARGO_GIT_SSH_KEY }}
+          TOKEN: ${{ steps.cargo-git-token.outputs.token }}
         run: |
           set -euo pipefail
-          if [[ -z "$CARGO_GIT_SSH_KEY" ]]; then
-            echo "No CARGO_GIT_SSH_KEY secret; private git dependencies will not resolve."
-            exit 0
-          fi
-          mkdir -p ~/.ssh
-          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" >> ~/.ssh/known_hosts
-          eval "$(ssh-agent -s)"
-          ssh-add - <<< "$CARGO_GIT_SSH_KEY"
-          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          AUTH=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
+          echo "::add-mask::$AUTH"
+          # Same mechanism as actions/checkout; ssh:// and scp-style URLs are rewritten to https so the header applies.
+          git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $AUTH"
+          git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/
+          git config --global --add url.https://github.com/.insteadOf git@github.com:
           echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
@@ -338,6 +353,25 @@ jobs:
                           print name, $0
                         }' Cargo.lock)
 
+      - name: Fetch private Cargo git dependencies
+        if: env.CARGO_GIT_APP == 'true'
+        shell: bash
+        run: cargo fetch
+
+      - name: Revoke private-dependency token
+        if: always() && steps.cargo-git-token.outputs.token != ''
+        shell: bash
+        env:
+          TOKEN: ${{ steps.cargo-git-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          git config --global --unset-all http.https://github.com/.extraheader || true
+          curl -fsS -X DELETE -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/installation/token \
+            || echo "::warning::could not revoke the private-dependency token; it expires within an hour"
+          # Everything is fetched; clippy must not try the network without the token.
+          echo "CARGO_NET_OFFLINE=true" >> "$GITHUB_ENV"
+
       - name: cargo clippy
         shell: bash
         env:
@@ -390,10 +424,23 @@ jobs:
     needs: detect
     if: needs.detect.outputs.has-rust == 'true'
     runs-on: ubuntu-24.04
+    env:
+      CARGO_GIT_APP: ${{ secrets.CARGO_GIT_APP_CLIENT_ID != '' && secrets.CARGO_GIT_APP_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           persist-credentials: false
+
+      # cargo-deny runs no build scripts, so the token can live until the action revokes it at job end.
+      - name: Create token for private Cargo git dependencies
+        id: cargo-git-token
+        if: env.CARGO_GIT_APP == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.CARGO_GIT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CARGO_GIT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
 
       # The config must land inside the workspace: the action's container cannot see a host path and silently falls back to its own defaults.
       - name: Resolve cargo-deny config
@@ -416,9 +463,9 @@ jobs:
           command: check
           manifest-path: ${{ inputs.rust-workspace }}/Cargo.toml
           command-arguments: --config ${{ inputs.rust-workspace }}/.ci-deny.toml all
-          ssh-key: ${{ secrets.CARGO_GIT_SSH_KEY }}
-          ssh-known-hosts: "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
-          use-git-cli: ${{ secrets.CARGO_GIT_SSH_KEY != '' }}
+          # The action stores these for git and rewrites ssh:// and git@github.com: URLs to https.
+          credentials: ${{ steps.cargo-git-token.outputs.token && format('https://x-access-token:{0}@github.com', steps.cargo-git-token.outputs.token) || '' }}
+          use-git-cli: ${{ env.CARGO_GIT_APP }}
 
   sec3-xray:
     needs: detect
