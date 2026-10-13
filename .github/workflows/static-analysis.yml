@@ -105,6 +105,10 @@ on:
         required: false
         default: "https://raw.githubusercontent.com/marinade-finance/.github/main/deny.toml"
         type: string
+    secrets:
+      CARGO_GIT_SSH_KEY:
+        description: "Private SSH key (read-only deploy key) for Cargo git dependencies on private repos (ssh://git@github.com/...). Optional; without it only public dependencies resolve."
+        required: false
 
 jobs:
   detect:
@@ -209,6 +213,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           persist-credentials: false
+
+      - name: Load SSH key for private Cargo git dependencies
+        env:
+          CARGO_GIT_SSH_KEY: ${{ secrets.CARGO_GIT_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$CARGO_GIT_SSH_KEY" ]]; then
+            echo "No CARGO_GIT_SSH_KEY secret; private git dependencies will not resolve."
+            exit 0
+          fi
+          mkdir -p ~/.ssh
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" >> ~/.ssh/known_hosts
+          eval "$(ssh-agent -s)"
+          ssh-add - <<< "$CARGO_GIT_SSH_KEY"
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
@@ -396,6 +416,9 @@ jobs:
           command: check
           manifest-path: ${{ inputs.rust-workspace }}/Cargo.toml
           command-arguments: --config ${{ inputs.rust-workspace }}/.ci-deny.toml all
+          ssh-key: ${{ secrets.CARGO_GIT_SSH_KEY }}
+          ssh-known-hosts: "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+          use-git-cli: ${{ secrets.CARGO_GIT_SSH_KEY != '' }}
 
   sec3-xray:
     needs: detect
