@@ -223,6 +223,7 @@ jobs:
       - name: Create token for private Cargo git dependencies
         id: cargo-git-token
         if: env.CARGO_GIT_APP == 'true'
+        continue-on-error: true  # a broken App must not fail CI org-wide; repos without private deps keep working
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ secrets.CARGO_GIT_APP_CLIENT_ID }}
@@ -232,7 +233,7 @@ jobs:
           skip-token-revoke: true
 
       - name: Route Cargo git fetches through the token
-        if: env.CARGO_GIT_APP == 'true'
+        if: steps.cargo-git-token.outputs.token != ''
         env:
           TOKEN: ${{ steps.cargo-git-token.outputs.token }}
         run: |
@@ -354,7 +355,7 @@ jobs:
                         }' Cargo.lock)
 
       - name: Fetch private Cargo git dependencies
-        if: env.CARGO_GIT_APP == 'true'
+        if: steps.cargo-git-token.outputs.token != ''
         shell: bash
         run: cargo fetch
 
@@ -435,6 +436,7 @@ jobs:
       - name: Create token for private Cargo git dependencies
         id: cargo-git-token
         if: env.CARGO_GIT_APP == 'true'
+        continue-on-error: true  # a broken App must not fail CI org-wide; repos without private deps keep working
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ secrets.CARGO_GIT_APP_CLIENT_ID }}
@@ -465,7 +467,7 @@ jobs:
           command-arguments: --config ${{ inputs.rust-workspace }}/.ci-deny.toml all
           # The action stores these for git and rewrites ssh:// and git@github.com: URLs to https.
           credentials: ${{ steps.cargo-git-token.outputs.token && format('https://x-access-token:{0}@github.com', steps.cargo-git-token.outputs.token) || '' }}
-          use-git-cli: ${{ env.CARGO_GIT_APP }}
+          use-git-cli: ${{ steps.cargo-git-token.outputs.token != '' }}
 
   sec3-xray:
     needs: detect

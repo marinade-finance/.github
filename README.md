@@ -94,7 +94,7 @@ Git dependencies on private org repos (`ssh://git@github.com/marinade-finance/..
 
 1. Create a GitHub App owned by the org with **Repository permissions → Contents: Read-only** and nothing else, no webhook. Generate a private key.
 2. Install it on the org, limited to the repos that are used as git dependencies (e.g. `unstake`).
-3. Add org **Actions** secrets `CARGO_GIT_APP_CLIENT_ID` and `CARGO_GIT_APP_PRIVATE_KEY`, visible to the repos that consume those dependencies.
+3. Add org **Actions** secrets `CARGO_GIT_APP_CLIENT_ID` and `CARGO_GIT_APP_PRIVATE_KEY` with repository access **Private repositories**, so every private repo can use them and public repos never see them. If the token cannot be created, the jobs warn and continue as if the secrets were absent.
 4. For Dependabot:
    - Add the same two secrets as org **Dependabot** secrets: workflows triggered by Dependabot PRs only see Dependabot secrets.
    - Under org **Settings → Code security → Global settings → Grant Dependabot access to private repositories**, add the dependency repos, so Dependabot's own update runs can resolve them.
