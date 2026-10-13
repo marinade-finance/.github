@@ -88,6 +88,19 @@ with:
 
 To propose a change to the shared policy (license allowlist, advisory ignore list, etc.), open a PR against this repo.
 
+### Private Cargo git dependencies
+
+Git dependencies on private org repos (`ssh://git@github.com/marinade-finance/...`, `git@github.com:...` or `https://github.com/...`) are fetched with a short-lived token from a GitHub App. Without the two secrets below, the workflow behaves as before and only public dependencies resolve.
+
+1. Create a GitHub App owned by the org with **Repository permissions → Contents: Read-only** and nothing else, no webhook. Generate a private key.
+2. Install it on the org, limited to the repos that are used as git dependencies (e.g. `unstake`).
+3. Add org **Actions** secrets `CARGO_GIT_APP_CLIENT_ID` and `CARGO_GIT_APP_PRIVATE_KEY` with repository access **Private repositories**, so every private repo can use them and public repos never see them. If the token cannot be created, the jobs warn and continue as if the secrets were absent.
+4. For Dependabot:
+   - Add the same two secrets as org **Dependabot** secrets: workflows triggered by Dependabot PRs only see Dependabot secrets.
+   - Under org **Settings → Code security → Global settings → Grant Dependabot access to private repositories**, add the dependency repos, so Dependabot's own update runs can resolve them.
+
+The required workflow passes secrets through with `secrets: inherit`; a repo calling `static-analysis.yml` directly needs the same. In `clippy` the token is revoked after `cargo fetch`, before any dependency build script runs, and clippy then runs with `CARGO_NET_OFFLINE=true`.
+
 ### Local-dev mirror
 
 To catch issues before pushing, add a `Makefile` target in your repo. `make` defaults to `/bin/sh` on most systems, so the deny.toml is downloaded to a temp file rather than passed via process substitution:

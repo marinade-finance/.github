@@ -105,6 +105,13 @@ on:
         required: false
         default: "https://raw.githubusercontent.com/marinade-finance/.github/main/deny.toml"
         type: string
+    secrets:
+      CARGO_GIT_APP_CLIENT_ID:
+        description: "Client ID of a GitHub App with read access to the private repos that Cargo git dependencies point at. Optional; without it (and CARGO_GIT_APP_PRIVATE_KEY) only public dependencies resolve."
+        required: false
+      CARGO_GIT_APP_PRIVATE_KEY:
+        description: "Private key of that GitHub App."
+        required: false
 
 jobs:
   detect:
@@ -205,10 +212,37 @@ jobs:
     defaults:
       run:
         working-directory: ${{ inputs.rust-workspace }}
+    env:
+      CARGO_GIT_APP: ${{ secrets.CARGO_GIT_APP_CLIENT_ID != '' && secrets.CARGO_GIT_APP_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           persist-credentials: false
+
+      - name: Create token for private Cargo git dependencies
+        id: cargo-git-token
+        if: env.CARGO_GIT_APP == 'true'
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.CARGO_GIT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CARGO_GIT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
+          skip-token-revoke: true
+
+      - name: Route Cargo git fetches through the token
+        if: steps.cargo-git-token.outputs.token != ''
+        env:
+          TOKEN: ${{ steps.cargo-git-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          AUTH=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
+          echo "::add-mask::$AUTH"
+          git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $AUTH"
+          git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/
+          git config --global --add url.https://github.com/.insteadOf git@github.com:
+          echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
@@ -318,6 +352,24 @@ jobs:
                           print name, $0
                         }' Cargo.lock)
 
+      - name: Fetch private Cargo git dependencies
+        if: steps.cargo-git-token.outputs.token != ''
+        shell: bash
+        run: cargo fetch
+
+      - name: Revoke private-dependency token
+        if: always() && steps.cargo-git-token.outputs.token != ''
+        shell: bash
+        env:
+          TOKEN: ${{ steps.cargo-git-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          git config --global --unset-all http.https://github.com/.extraheader || true
+          curl -fsS -X DELETE -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/installation/token \
+            || echo "::warning::could not revoke the private-dependency token; it expires within an hour"
+          echo "CARGO_NET_OFFLINE=true" >> "$GITHUB_ENV"
+
       - name: cargo clippy
         shell: bash
         env:
@@ -370,10 +422,23 @@ jobs:
     needs: detect
     if: needs.detect.outputs.has-rust == 'true'
     runs-on: ubuntu-24.04
+    env:
+      CARGO_GIT_APP: ${{ secrets.CARGO_GIT_APP_CLIENT_ID != '' && secrets.CARGO_GIT_APP_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           persist-credentials: false
+
+      - name: Create token for private Cargo git dependencies
+        id: cargo-git-token
+        if: env.CARGO_GIT_APP == 'true'
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.CARGO_GIT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CARGO_GIT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
 
       # The config must land inside the workspace: the action's container cannot see a host path and silently falls back to its own defaults.
       - name: Resolve cargo-deny config
@@ -396,6 +461,8 @@ jobs:
           command: check
           manifest-path: ${{ inputs.rust-workspace }}/Cargo.toml
           command-arguments: --config ${{ inputs.rust-workspace }}/.ci-deny.toml all
+          credentials: ${{ steps.cargo-git-token.outputs.token && format('https://x-access-token:{0}@github.com', steps.cargo-git-token.outputs.token) || '' }}
+          use-git-cli: ${{ steps.cargo-git-token.outputs.token != '' }}
 
   sec3-xray:
     needs: detect
