@@ -219,11 +219,10 @@ jobs:
         with:
           persist-credentials: false
 
-      # Private git dependencies: a short-lived read-only App token, revoked before clippy runs dependency build scripts.
       - name: Create token for private Cargo git dependencies
         id: cargo-git-token
         if: env.CARGO_GIT_APP == 'true'
-        continue-on-error: true  # a broken App must not fail CI org-wide; repos without private deps keep working
+        continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ secrets.CARGO_GIT_APP_CLIENT_ID }}
@@ -240,7 +239,6 @@ jobs:
           set -euo pipefail
           AUTH=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
           echo "::add-mask::$AUTH"
-          # Same mechanism as actions/checkout; ssh:// and scp-style URLs are rewritten to https so the header applies.
           git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $AUTH"
           git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/
           git config --global --add url.https://github.com/.insteadOf git@github.com:
@@ -370,7 +368,6 @@ jobs:
           curl -fsS -X DELETE -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
             https://api.github.com/installation/token \
             || echo "::warning::could not revoke the private-dependency token; it expires within an hour"
-          # Everything is fetched; clippy must not try the network without the token.
           echo "CARGO_NET_OFFLINE=true" >> "$GITHUB_ENV"
 
       - name: cargo clippy
@@ -432,11 +429,10 @@ jobs:
         with:
           persist-credentials: false
 
-      # cargo-deny runs no build scripts, so the token can live until the action revokes it at job end.
       - name: Create token for private Cargo git dependencies
         id: cargo-git-token
         if: env.CARGO_GIT_APP == 'true'
-        continue-on-error: true  # a broken App must not fail CI org-wide; repos without private deps keep working
+        continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ secrets.CARGO_GIT_APP_CLIENT_ID }}
@@ -465,7 +461,6 @@ jobs:
           command: check
           manifest-path: ${{ inputs.rust-workspace }}/Cargo.toml
           command-arguments: --config ${{ inputs.rust-workspace }}/.ci-deny.toml all
-          # The action stores these for git and rewrites ssh:// and git@github.com: URLs to https.
           credentials: ${{ steps.cargo-git-token.outputs.token && format('https://x-access-token:{0}@github.com', steps.cargo-git-token.outputs.token) || '' }}
           use-git-cli: ${{ steps.cargo-git-token.outputs.token != '' }}
 
