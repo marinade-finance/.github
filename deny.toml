@@ -10,6 +10,10 @@ ignore = [
   "RUSTSEC-2026-0099",
   "RUSTSEC-2026-0104",
 
+  # rustls 0.21 via solana-pubsub-client <=3.0 (tokio-tungstenite 0.20), patched only in 0.23.46. RETIRE on agave >=3.1.
+  "RUSTSEC-2026-0346",
+  "RUSTSEC-2026-0349",
+
   # curve25519-dalek 3.2.x / ed25519-dalek 1.0.1, reached only through monolithic solana-sdk <=2.x (25 repos). RETIRE per repo on moving to the granular solana-* crates.
   "RUSTSEC-2024-0344",
   "RUSTSEC-2022-0093",
