@@ -74,7 +74,7 @@ All inputs are optional.
 | `anchor-cli-version` | `0.31.1` | `anchor-cli` version installed for the sec3-xray job (X-Ray shells out to `anchor` for IDL extraction) |
 | `solana-lints-repo` | `https://github.com/otter-sec/anchor-lints.git` | Git URL of the dylint lints to build, passed straight to `git clone`. otter-sec is actively maintained, Anchor-focused, and a single Cargo workspace; the legacy `crytic`/`trailofbits` `solana-lints` is dormant and stuck on `nightly-2025-01-09` (rustc 1.86), too old for workspaces whose deps need rustc 1.88+ |
 | `solana-lints-ref` | (pinned SHA) | Git ref of `solana-lints-repo` to build lints from; must be compatible with `solana-lints-toolchain`, so bump the two together |
-| `cargo-dylint-version` | `5.0.0` | `cargo-dylint` / `dylint-link` version installed for the solana-lints job. Must match the `dylint_linting` version the lints repo builds against — otter-sec/anchor-lints uses dylint 5.x |
+| `cargo-dylint-version` | `6.3.1` | `cargo-dylint` / `dylint-link` version installed for the solana-lints job. Its driver must accept the lints' dylint ABI (`DYLINT_VERSION` 0.1.0, shared by dylint 5.x and 6.x). 6.3.0+ is required because Clippy renamed its default branch to `main` and older drivers fail to build |
 | `deny-config` | `…/main/deny.toml` | URL of the cargo-deny config to fetch. Override to pin policy to a tag/SHA |
 
 ### Shared config
