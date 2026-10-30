@@ -36,7 +36,7 @@ ignore = [
   "RUSTSEC-2026-0248",
   "RUSTSEC-2026-0251",
 
-  # crypto-bigint 0.5 timing leaks, patched only in >=0.7.6; reached via solana-secp256k1-recover -> k256 0.13, recover runs on public data. RETIRE when solana-secp256k1-recover moves to k256 0.14.
+  # crypto-bigint timing leaks, patched only in >=0.7.6; 0.5 reached via solana-secp256k1-recover -> k256 0.13, recover runs on public data. Version-blind, so it also forgives 0.7.0-0.7.5, an in-range bump. RETIRE when no repo resolves crypto-bigint below 0.7.6.
   "RUSTSEC-2026-0387",
 
   # Yanked crates, reviewed one by one. `name@version` is an exact match, so each entry stops
