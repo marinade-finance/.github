@@ -82,9 +82,9 @@ on:
         default: "d8116dd619414c1b4dd9d17cd66458e66f699c0a"
         type: string
       cargo-dylint-version:
-        description: "cargo-dylint / dylint-link version to install. Must match the dylint_linting version the lints repo builds against — otter-sec/anchor-lints uses dylint 5.x; cargo-dylint 5.0.0 builds cleanly on the nightly-2025-09-18 (rustc 1.91) the lints pin."
+        description: "cargo-dylint / dylint-link version to install. Its driver must accept the lints' dylint ABI (DYLINT_VERSION 0.1.0, shared by dylint 5.x and 6.x, so it loads otter-sec/anchor-lints built on dylint_linting 5.x). 6.3.0+ is required since Clippy renamed its default branch to main; older drivers fail to build cloning Clippy's `master`."
         required: false
-        default: "5.0.0"
+        default: "6.3.1"
         type: string
       xray-fail-on-findings:
         description: >-
