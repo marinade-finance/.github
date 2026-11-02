@@ -39,6 +39,16 @@ ignore = [
   # crypto-bigint timing leaks, patched only in >=0.7.6; 0.5 reached via solana-secp256k1-recover -> k256 0.13, recover runs on public data. Version-blind, so it also forgives 0.7.0-0.7.5, an in-range bump. RETIRE when no repo resolves crypto-bigint below 0.7.6.
   "RUSTSEC-2026-0387",
 
+  # zstd 0.13 / zstd-safe 7, fixed only in zstd 0.14.3 / zstd-safe 8.2.0. solana-rpc-client 2.3-4.3 turns on
+  # the zstd feature of solana-account-decoder-client-types, and the agave crates pin each other exactly,
+  # so no repo can bump zstd alone. Solana calls only stream::write::Encoder::new and
+  # stream::read::Decoder::new, with the seekable feature off. 0391 needs the with_context constructors,
+  # 0398 needs Seekable::decompress, 0403 needs stream::write::Decoder. RETIRE when every repo is on
+  # solana >= 4.4 (zstd 0.14).
+  "RUSTSEC-2026-0391",
+  "RUSTSEC-2026-0398",
+  "RUSTSEC-2026-0403",
+
   # Yanked crates, reviewed one by one. `name@version` is an exact match, so each entry stops
   # matching the moment the resolved version moves — that is the retirement signal. `name:version`
   # would be a semver *requirement* and would forgive the whole compatible range instead.
