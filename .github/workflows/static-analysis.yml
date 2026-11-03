@@ -121,7 +121,7 @@ jobs:
       has-anchor: ${{ steps.check.outputs.has-anchor }}
       anchor-present: ${{ steps.check.outputs.anchor-present }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -215,7 +215,7 @@ jobs:
     env:
       CARGO_GIT_APP: ${{ secrets.CARGO_GIT_APP_CLIENT_ID != '' && secrets.CARGO_GIT_APP_PRIVATE_KEY != '' }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -425,7 +425,7 @@ jobs:
     env:
       CARGO_GIT_APP: ${{ secrets.CARGO_GIT_APP_CLIENT_ID != '' && secrets.CARGO_GIT_APP_PRIVATE_KEY != '' }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -456,7 +456,7 @@ jobs:
             curl -fsSL "$DENY_CONFIG_URL" -o "$DENY_CONFIG_PATH"
           fi
 
-      - uses: EmbarkStudios/cargo-deny-action@5bb39ff5d5a0e94dc9e2dc94eced0c6129743a57 # v2
+      - uses: EmbarkStudios/cargo-deny-action@5bb39ff5d5a0e94dc9e2dc94eced0c6129743a57 # v2.0.17
         with:
           command: check
           manifest-path: ${{ inputs.rust-workspace }}/Cargo.toml
@@ -472,7 +472,7 @@ jobs:
       run:
         working-directory: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -614,7 +614,7 @@ jobs:
       run:
         working-directory: ${{ inputs.anchor-workspace || inputs.rust-workspace }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -624,7 +624,7 @@ jobs:
           toolchain: stable
 
       - name: Install dylint
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2
+        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
         with:
           tool: cargo-dylint@${{ inputs.cargo-dylint-version }},dylint-link@${{ inputs.cargo-dylint-version }}
 
