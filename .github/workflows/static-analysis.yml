@@ -456,13 +456,16 @@ jobs:
             curl -fsSL "$DENY_CONFIG_URL" -o "$DENY_CONFIG_PATH"
           fi
 
-      - uses: EmbarkStudios/cargo-deny-action@5bb39ff5d5a0e94dc9e2dc94eced0c6129743a57 # v2.0.17
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        # use-git-cli is a no-op since v2.1; the env keeps cargo fetching private deps via git CLI.
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: ${{ steps.cargo-git-token.outputs.token != '' }}
         with:
           command: check
           manifest-path: ${{ inputs.rust-workspace }}/Cargo.toml
-          command-arguments: --config ${{ inputs.rust-workspace }}/.ci-deny.toml all
+          arguments: --all-features --config ${{ inputs.rust-workspace }}/.ci-deny.toml
+          command-arguments: all
           credentials: ${{ steps.cargo-git-token.outputs.token && format('https://x-access-token:{0}@github.com', steps.cargo-git-token.outputs.token) || '' }}
-          use-git-cli: ${{ steps.cargo-git-token.outputs.token != '' }}
 
   sec3-xray:
     needs: detect
