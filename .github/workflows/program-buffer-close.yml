@@ -1,0 +1,114 @@
+name: Program buffer close (reusable)
+
+# Returns what the proposer key holds: closes every BPF loader and Program Metadata buffer whose
+# authority is still the proposer, then sweeps its balance to `refund-to`. The program-buffer
+# write job does this itself when it fails; this is for a run whose runner was lost mid-way.
+# Buffers already handed to the governance need the abort proposal of their run instead.
+#
+# Share the caller's `concurrency` group with the program-buffer caller, so this never closes
+# the buffer of a run in progress.
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+    inputs:
+      proposer:
+        description: Public key of the PROGRAM_BUFFER_KEYPAIR environment secret.
+        required: true
+        type: string
+      refund-to:
+        description: Receives the closed buffers' rent and the proposer's balance.
+        required: true
+        type: string
+      environment:
+        description: Environment holding PROGRAM_BUFFER_KEYPAIR.
+        required: false
+        default: program-buffer
+        type: string
+      cli-image:
+        description: Image providing the Solana CLI.
+        required: false
+        default: solanafoundation/solana-verifiable-build:4.0.3
+        type: string
+      rpc-url:
+        description: Mainnet RPC; the PROGRAM_BUFFER_RPC_URL environment secret takes precedence.
+        required: false
+        default: https://api.mainnet-beta.solana.com
+        type: string
+    secrets:
+      PROGRAM_BUFFER_KEYPAIR:
+        required: false
+      PROGRAM_BUFFER_RPC_URL:
+        required: false
+
+jobs:
+  close:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+    container:
+      image: ${{ inputs.cli-image }}
+    env:
+      RPC_URL: ${{ secrets.PROGRAM_BUFFER_RPC_URL || inputs.rpc-url }}
+      PROPOSER: ${{ inputs.proposer }}
+      REFUND_TO: ${{ inputs.refund-to }}
+    steps:
+      - name: Check inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$REFUND_TO" =~ ^[1-9A-HJ-NP-Za-km-z]{32,44}$ ]] || { echo "::error::refund-to '$REFUND_TO' is not a public key"; exit 1; }
+          [[ "$REFUND_TO" != "$PROPOSER" ]] || { echo "::error::refund-to must not be the proposer"; exit 1; }
+
+      - name: Require the default branch
+        if: github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
+        shell: bash
+        run: |
+          echo "::error::Runs only from the default branch, this run is on $GITHUB_REF"
+          exit 1
+
+      - id: tools
+        uses: $/actions/program-buffer
+
+      - name: Install the signing dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends python3-cryptography > /dev/null
+
+      - name: Load the proposer key
+        shell: bash
+        env:
+          KEYPAIR: ${{ secrets.PROGRAM_BUFFER_KEYPAIR }}
+        run: |
+          set -euo pipefail
+          [[ -n "$KEYPAIR" ]] || { echo "::error::The PROGRAM_BUFFER_KEYPAIR secret is not set on this job's environment"; exit 1; }
+          umask 077
+          printf '%s' "$KEYPAIR" > "$RUNNER_TEMP/proposer.json"
+          actual=$(solana-keygen pubkey "$RUNNER_TEMP/proposer.json")
+          if [[ "$actual" != "$PROPOSER" ]]; then
+            rm -f "$RUNNER_TEMP/proposer.json"
+            echo "::error::PROGRAM_BUFFER_KEYPAIR is $actual, the caller names proposer $PROPOSER"
+            exit 1
+          fi
+
+      - name: Close the proposer's buffers
+        shell: bash
+        env:
+          PB: ${{ steps.tools.outputs.script }}
+        run: python3 -I "$PB" close-buffers --rpc "$RPC_URL" --keypair "$RUNNER_TEMP/proposer.json" --refund-to "$REFUND_TO"
+
+      - name: Return the proposer's balance
+        shell: bash
+        env:
+          PB: ${{ steps.tools.outputs.script }}
+        run: python3 -I "$PB" sweep --rpc "$RPC_URL" --keypair "$RUNNER_TEMP/proposer.json" --refund-to "$REFUND_TO"
+
+      - name: Remove the key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/proposer.json"

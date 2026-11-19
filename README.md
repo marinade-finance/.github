@@ -222,6 +222,79 @@ Then trigger it from the **Actions** tab. RPC URLs default to the public Solana 
 
 `fail-on-mismatch` defaults to true, but only the clusters in `blocking-clusters` (default `mainnet mainnet-beta`) can fail the job. One local build cannot match two clusters holding different deployments, so a repo declaring the same program under both mainnet and devnet would otherwise be permanently red. Non-blocking clusters are still reported in the summary. Set `blocking-clusters: "*"` to gate on all of them, or `fail-on-mismatch: false` to observe drift without blocking anywhere.
 
+## Program buffer proposals (`program-buffer.yml`)
+
+A manually dispatched reusable workflow that prepares a program upgrade for an SPL Governance vote. Nobody needs the build to come from CI: voters rebuild the commit themselves and compare hashes. The workflow does the chores around that and holds one funded hot key for the length of a run.
+
+1. **build** (no secrets): checks out `ref` (any commit, tag or branch), builds it with `solana-verify`, generates its IDL, reads the deployed hash and upgrade authority, and prints the SOL the run needs. A **dry run** stops here. Use one to check a past commit against the deployment.
+2. **write** waits for approval of the caller's environment. The approver confirms the proposer is funded. The job then writes the program buffer and an IDL buffer ([Program Metadata](https://github.com/solana-program/program-metadata) canonical `idl`). It hands both to the upgrade authority in one transaction, reads them back against the build, and renders the proposal. This job downloads the build's artifacts and runs none of the repository's code.
+3. Everything the proposer still holds at the end is swept to `refund-to`. A failed or cancelled run first closes the buffers it has not handed off yet.
+
+The run summary and the `program-buffer-proposal` artifact hold:
+
+- the built, buffer and deployed hashes;
+- verification steps for macOS (zsh) and Ubuntu/Debian, with every value written out;
+- the proposal as a [spl-governance-cli](https://github.com/marinade-finance/spl-governance-cli) 2.x manifest (`proposal create-batch proposal.yaml`), with each instruction also listed as Realms custom-instruction base64;
+- `abort.yaml`, a proposal that closes the buffers and returns their rent if the vote fails.
+
+The proposal's transactions are:
+
+1. BPF loader `Upgrade`, with the buffer lamports going to `refund-to`.
+2. IDL allocate and extends.
+3. IDL write from the buffer, initialize (or set-data on an existing IDL), and close the IDL buffer to `refund-to`.
+
+A data transaction executed early fails without effect, and initialize always runs with its write.
+
+### Setup per program repository
+
+1. On a trusted machine, run `solana-keygen new -o proposer.json`. Use one key per repository: a failed run closes every buffer its key holds.
+2. Create the environment `program-buffer`:
+   - required reviewers, with *Prevent self-review* on;
+   - deployment branches limited to the default branch;
+   - secret `PROGRAM_BUFFER_KEYPAIR` set to the content of `proposer.json`;
+   - secret `PROGRAM_BUFFER_RPC_URL` set to a mainnet RPC that lands transactions (the public endpoint drops buffer writes).
+
+   The environment's branch rule decides where the workflow file comes from, not what is built, so any `ref` can still be proposed. The write job also refuses to run outside the default branch.
+3. Add the callers and put the key's public key in their `proposer:` (distributor's [`program-buffer.yml`](https://github.com/marinade-finance/distributor/blob/main/.github/workflows/program-buffer.yml) is the example). Both callers share one `concurrency` group. Pin the reusable workflow by commit SHA: it handles a funded key.
+
+```yaml
+jobs:
+  program-buffer:
+    uses: marinade-finance/.github/.github/workflows/program-buffer.yml@<sha>
+    with:
+      ref: ${{ inputs.ref }}
+      dry-run: ${{ inputs.dry-run }}
+      refund-to: ${{ inputs.refund-to }}
+      program-id: meRdrpyDCAbQxunjZSLmJ78GxQcn4fJUvqU93GoHZr1
+      governance: 7iUtTuZAh2Len8LiC1u68gUMPMsKh9kce9bcbdGwtBZY
+      proposer: <public key of PROGRAM_BUFFER_KEYPAIR>
+      library-name: merkle_distributor
+      idl: anchor
+```
+
+`program-buffer-close.yml` is the manual cleanup for a run whose runner was lost: it closes the proposer's buffers and sweeps its balance.
+
+### Build settings
+
+`.github/program-buffer.toml` is read at the commit being built, so a settings change stays tied to the commits it applies to. Its keys override the caller inputs of the same name. A commit older than the file uses the caller's values.
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `library-name` | — | Crate `[lib]` name |
+| `base-image` | derived from `Cargo.lock`'s `solana-program` | Verifiable build image |
+| `solana-verify-version` | `0.4.15` | A bump can change the hash |
+| `cargo-args` | — | After `--` of `solana-verify build`; `{commit}` and `{commit_short}` (7 characters) are substituted, e.g. `--config env.GIT_REV='{commit_short}'` |
+| `idl` | `none` | `anchor` runs `anchor idl build` in `anchor-image`; a path takes a committed IDL JSON |
+| `anchor-image` | `solanafoundation/anchor:v<Anchor.toml anchor_version>` | Image for `anchor idl build` |
+
+### Tested, and what is not covered
+
+`actions/program-buffer/tests/local_validator_test.py` runs the tool on a `solana-test-validator` (Agave 4.x, the Program Metadata binary dumped from mainnet), with a local key standing in for the treasury. It covers: an upgrade with a first IDL, an IDL update that shrinks, an unchanged IDL, the abort proposal, IDLs over the 10 KiB realloc limit (create and update), and the failed-run cleanup. Its instruction encoders reproduce the instructions of an executed validator-bonds proposal.
+
+- A program that outgrows its ProgramData needs `ExtendProgram` first. The plan fails with the size instead of proposing it.
+- Only SPL Governance authorities: liquid-staking-program, behind the multisig, keeps its own procedure.
+- The tool reaches its own script through `uses: $/actions/program-buffer` (runner 2.336.0+). actionlint 1.7.12 does not know this syntax yet.
+
 ## Other workflows
 
 - [`trivy-scan.yml`](./.github/workflows/trivy-scan.yml) — filesystem vulnerability scan run on this repo.

@@ -1,0 +1,420 @@
+name: Program buffer (reusable)
+
+# Prepares a program upgrade for an SPL Governance vote, see README "Program buffer proposals".
+# build:  verifiable build of `ref`, its IDL, what is deployed, the funding plan. No secrets.
+#         A dry run stops here, which is how a past commit is checked against the deployment.
+# write:  waits for the environment approval ("the proposer is funded"), then writes the program
+#         and IDL buffers with the proposer key, hands both to the upgrade authority and renders
+#         the proposal payloads. It runs no code of the built repository.
+#
+# Declare `concurrency` in the caller and share its group with the program-buffer-close caller:
+# a failed run closes every buffer the proposer key still holds.
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit, tag or branch to build.
+        required: true
+        type: string
+      program-id:
+        description: The program to upgrade.
+        required: true
+        type: string
+      governance:
+        description: SPL Governance account; it or its native treasury must be the program's upgrade authority.
+        required: true
+        type: string
+      proposer:
+        description: >-
+          Public key of the PROGRAM_BUFFER_KEYPAIR environment secret, the address the funder pays.
+          Required unless dry-run.
+        required: false
+        default: ""
+        type: string
+      refund-to:
+        description: >-
+          Receives every refund: the buffer rent when the upgrade (or the abort proposal) executes,
+          and what the proposer holds at the end of the run. Required unless dry-run.
+        required: false
+        default: ""
+        type: string
+      dry-run:
+        description: Build and compare only; nothing is written and no approval is requested.
+        required: false
+        default: true
+        type: boolean
+      settings-file:
+        description: >-
+          TOML read at `ref` whose keys (library-name, base-image, solana-verify-version, cargo-args,
+          idl, anchor-image) override the inputs of the same name.
+        required: false
+        default: .github/program-buffer.toml
+        type: string
+      library-name:
+        description: Crate [lib] name, the .so stem. Used when the settings file at `ref` does not set it.
+        required: false
+        default: ""
+        type: string
+      base-image:
+        description: Verifiable build image; derived from Cargo.lock's solana-program when empty.
+        required: false
+        default: ""
+        type: string
+      solana-verify-version:
+        description: solana-verify version; a bump can change the hash.
+        required: false
+        default: ""
+        type: string
+      cargo-args:
+        description: Arguments after `--` of solana-verify build; `{commit}` and `{commit_short}` (7 chars) are substituted.
+        required: false
+        default: ""
+        type: string
+      idl:
+        description: '"anchor" (anchor idl build in anchor-image), a path to an IDL JSON in the repo, or "none".'
+        required: false
+        default: ""
+        type: string
+      anchor-image:
+        description: Image for anchor idl build; derived from Anchor.toml [toolchain] anchor_version when empty.
+        required: false
+        default: ""
+        type: string
+      environment:
+        description: Environment of the write job, holding PROGRAM_BUFFER_KEYPAIR and its required reviewers.
+        required: false
+        default: program-buffer
+        type: string
+      cli-image:
+        description: Image providing the Solana CLI for the write job.
+        required: false
+        default: solanafoundation/solana-verifiable-build:4.0.3
+        type: string
+      rpc-url:
+        description: Mainnet RPC for reads; the write job prefers the PROGRAM_BUFFER_RPC_URL environment secret.
+        required: false
+        default: https://api.mainnet-beta.solana.com
+        type: string
+      compute-unit-price:
+        description: Priority fee of the buffer writes, in micro-lamports per compute unit.
+        required: false
+        default: 100000
+        type: number
+    secrets:
+      PROGRAM_BUFFER_KEYPAIR:
+        description: Set it on the environment; an environment secret takes precedence over a passed one.
+        required: false
+      PROGRAM_BUFFER_RPC_URL:
+        description: Mainnet RPC that lands transactions reliably; set it on the environment.
+        required: false
+    outputs:
+      built-hash:
+        description: Executable hash of the build.
+        value: ${{ jobs.build.outputs.built-hash }}
+      upgrade-needed:
+        description: '"true" when the build differs from the deployed program.'
+        value: ${{ jobs.build.outputs.upgrade-needed }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      built-hash: ${{ steps.plan.outputs.built-hash }}
+      upgrade-needed: ${{ steps.plan.outputs.upgrade-needed }}
+    env:
+      PROGRAM_ID: ${{ inputs.program-id }}
+      GOVERNANCE: ${{ inputs.governance }}
+      PROPOSER: ${{ inputs.proposer }}
+      REFUND_TO: ${{ inputs.refund-to }}
+      DRY_RUN: ${{ inputs.dry-run }}
+      RPC_URL: ${{ inputs.rpc-url }}
+      CU_PRICE: ${{ inputs.compute-unit-price }}
+    steps:
+      - name: Check inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          pubkey='^[1-9A-HJ-NP-Za-km-z]{32,44}$'
+          for name in PROGRAM_ID GOVERNANCE; do
+            [[ "${!name}" =~ $pubkey ]] || { echo "::error::$name '${!name}' is not a public key"; exit 1; }
+          done
+          for name in PROPOSER REFUND_TO; do
+            value="${!name}"
+            if [[ -z "$value" ]]; then
+              [[ "$DRY_RUN" == "true" ]] || { echo "::error::$name is required unless dry-run"; exit 1; }
+            elif ! [[ "$value" =~ $pubkey ]]; then
+              echo "::error::$name '$value' is not a public key"; exit 1
+            fi
+          done
+          if [[ -n "$PROPOSER" && "$PROPOSER" == "$REFUND_TO" ]]; then
+            echo "::error::refund-to must not be the proposer: the end-of-run sweep would return nothing"; exit 1
+          fi
+
+      # `persist-credentials: false`: the build runs the repository's build scripts, so no token is left in .git/config.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          path: source
+          persist-credentials: false
+
+      - id: tools
+        uses: $/actions/program-buffer
+
+      - name: Resolve build settings
+        id: settings
+        shell: bash
+        env:
+          PB: ${{ steps.tools.outputs.script }}
+          SETTINGS_FILE: ${{ inputs.settings-file }}
+          LIBRARY_NAME: ${{ inputs.library-name }}
+          BASE_IMAGE: ${{ inputs.base-image }}
+          SOLANA_VERIFY_VERSION: ${{ inputs.solana-verify-version }}
+          CARGO_ARGS: ${{ inputs.cargo-args }}
+          IDL: ${{ inputs.idl }}
+          ANCHOR_IMAGE: ${{ inputs.anchor-image }}
+        run: |
+          python3 -I "$PB" settings --workspace source --file "$SETTINGS_FILE" --out pb/settings.json \
+            --library-name "$LIBRARY_NAME" --base-image "$BASE_IMAGE" \
+            --solana-verify-version "$SOLANA_VERIFY_VERSION" --cargo-args "$CARGO_ARGS" \
+            --idl "$IDL" --anchor-image "$ANCHOR_IMAGE"
+
+      - name: Pull build images
+        shell: bash
+        env:
+          BASE_IMAGE: ${{ steps.settings.outputs.base-image }}
+          ANCHOR_IMAGE: ${{ steps.settings.outputs.anchor-image }}
+        run: |
+          set -euo pipefail
+          for image in "$BASE_IMAGE" ${ANCHOR_IMAGE:+"$ANCHOR_IMAGE"}; do
+            if ! docker pull "$image"; then
+              echo "::error::Cannot pull '$image': set base-image / anchor-image to a published tag"
+              exit 1
+            fi
+          done
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: stable
+
+      - name: Cache solana-verify binary
+        id: cache-solana-verify
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/solana-verify
+          key: solana-verify-${{ runner.os }}-${{ steps.settings.outputs.solana-verify-version }}
+
+      - name: Install solana-verify
+        if: steps.cache-solana-verify.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          SOLANA_VERIFY_VERSION: ${{ steps.settings.outputs.solana-verify-version }}
+        run: cargo install --locked solana-verify --version "$SOLANA_VERIFY_VERSION"
+
+      - name: Verifiable build
+        shell: bash
+        env:
+          PB: ${{ steps.tools.outputs.script }}
+          LIBRARY_NAME: ${{ steps.settings.outputs.library-name }}
+        run: |
+          set -euo pipefail
+          python3 -I "$PB" build --workspace source --settings pb/settings.json
+          cp "source/target/deploy/$LIBRARY_NAME.so" pb/program.so
+
+      - name: IDL
+        shell: bash
+        env:
+          PB: ${{ steps.tools.outputs.script }}
+        run: python3 -I "$PB" idl --workspace source --settings pb/settings.json --program "$PROGRAM_ID" --out pb/idl.json
+
+      - name: What is deployed
+        shell: bash
+        env:
+          PB: ${{ steps.tools.outputs.script }}
+        run: python3 -I "$PB" onchain --rpc "$RPC_URL" --program "$PROGRAM_ID" --governance "$GOVERNANCE" --out pb/onchain.json
+
+      - name: Funding plan
+        id: plan
+        shell: bash
+        env:
+          PB: ${{ steps.tools.outputs.script }}
+        run: |
+          python3 -I "$PB" plan --rpc "$RPC_URL" --onchain pb/onchain.json --so pb/program.so --idl pb/idl.json \
+            --proposer "$PROPOSER" --refund-to "$REFUND_TO" --compute-unit-price "$CU_PRICE" --out pb/plan.json
+
+      - name: Report
+        shell: bash
+        env:
+          PB: ${{ steps.tools.outputs.script }}
+        run: |
+          args=()
+          [[ "$DRY_RUN" == "true" ]] && args+=(--dry-run)
+          python3 -I "$PB" report --stage build "${args[@]}" --settings pb/settings.json --plan pb/plan.json \
+            --onchain pb/onchain.json --refund-to "$REFUND_TO" --repository "$GITHUB_REPOSITORY" --out pb/build-report.md
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: program-buffer-build
+          path: pb/
+          if-no-files-found: error
+          retention-days: 90
+
+  write:
+    needs: build
+    if: ${{ !inputs.dry-run }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: ${{ inputs.environment }}
+    container:
+      image: ${{ inputs.cli-image }}
+    env:
+      RPC_URL: ${{ secrets.PROGRAM_BUFFER_RPC_URL || inputs.rpc-url }}
+      PROPOSER: ${{ inputs.proposer }}
+      REFUND_TO: ${{ inputs.refund-to }}
+      CU_PRICE: ${{ inputs.compute-unit-price }}
+    steps:
+      # The environment should allow only the default branch; this holds even if it does not.
+      # It is where the workflow file comes from, not what is built: any `ref` can still be proposed.
+      - name: Require the default branch
+        if: github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
+        shell: bash
+        run: |
+          echo "::error::Writing buffers runs only from the default branch, this run is on $GITHUB_REF"
+          exit 1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: program-buffer-build
+          path: pb
+
+      - id: tools
+        uses: $/actions/program-buffer
+
+      - name: Install the signing dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends python3-cryptography > /dev/null
+
+      - name: Load the proposer key
+        id: key
+        shell: bash
+        env:
+          KEYPAIR: ${{ secrets.PROGRAM_BUFFER_KEYPAIR }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$KEYPAIR" ]]; then
+            echo "::error::The PROGRAM_BUFFER_KEYPAIR secret is not set on this job's environment"
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$KEYPAIR" > "$RUNNER_TEMP/proposer.json"
+          actual=$(solana-keygen pubkey "$RUNNER_TEMP/proposer.json")
+          if [[ "$actual" != "$PROPOSER" ]]; then
+            rm -f "$RUNNER_TEMP/proposer.json"
+            echo "::error::PROGRAM_BUFFER_KEYPAIR is $actual, the caller names proposer $PROPOSER"
+            exit 1
+          fi
+
+      - name: Check funding
+        shell: bash
+        env:
+          PB: ${{ steps.tools.outputs.script }}
+        run: python3 -I "$PB" check-funds --rpc "$RPC_URL" --plan pb/plan.json --proposer "$PROPOSER"
+
+      - name: Write the program buffer
+        id: buffer
+        shell: bash
+        run: |
+          set -euo pipefail
+          solana-keygen new --no-bip39-passphrase --silent --force -o "$RUNNER_TEMP/buffer.json"
+          echo "buffer=$(solana-keygen pubkey "$RUNNER_TEMP/buffer.json")" >> "$GITHUB_OUTPUT"
+          solana program write-buffer pb/program.so --buffer "$RUNNER_TEMP/buffer.json" \
+            -u "$RPC_URL" -k "$RUNNER_TEMP/proposer.json" \
+            --use-rpc --with-compute-unit-price "$CU_PRICE" --max-sign-attempts 50
+
+      - name: Verify the program buffer
+        shell: bash
+        env:
+          PB: ${{ steps.tools.outputs.script }}
+          BUFFER: ${{ steps.buffer.outputs.buffer }}
+        run: python3 -I "$PB" verify-buffer --rpc "$RPC_URL" --buffer "$BUFFER" --so pb/program.so --authority "$PROPOSER"
+
+      - name: Write the IDL buffer
+        id: idl
+        shell: bash
+        env:
+          PB: ${{ steps.tools.outputs.script }}
+        run: |
+          set -euo pipefail
+          mode=$(python3 -I -c 'import json; print((json.load(open("pb/plan.json")).get("idl") or {}).get("mode", "none"))')
+          echo "IDL: $mode"
+          if [[ "$mode" == create || "$mode" == update ]]; then
+            python3 -I "$PB" write-idl-buffer --rpc "$RPC_URL" --keypair "$RUNNER_TEMP/proposer.json" \
+              --idl pb/idl.json --buffer-keypair "$RUNNER_TEMP/idl-buffer.json" \
+              --compute-unit-price "$CU_PRICE" --out pb/idl-buffer.txt
+          fi
+          echo "idl-buffer=$(cat pb/idl-buffer.txt 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+
+      - name: Hand the buffers to the upgrade authority
+        shell: bash
+        env:
+          PB: ${{ steps.tools.outputs.script }}
+          BUFFER: ${{ steps.buffer.outputs.buffer }}
+          IDL_BUFFER: ${{ steps.idl.outputs.idl-buffer }}
+        run: |
+          python3 -I "$PB" handoff --rpc "$RPC_URL" --keypair "$RUNNER_TEMP/proposer.json" --plan pb/plan.json \
+            --onchain pb/onchain.json --program-buffer "$BUFFER" --idl-buffer "$IDL_BUFFER" --idl pb/idl.json \
+            --compute-unit-price "$CU_PRICE"
+
+      - name: Proposal
+        shell: bash
+        env:
+          PB: ${{ steps.tools.outputs.script }}
+          BUFFER: ${{ steps.buffer.outputs.buffer }}
+          IDL_BUFFER: ${{ steps.idl.outputs.idl-buffer }}
+          GOVERNANCE: ${{ inputs.governance }}
+        run: |
+          set -euo pipefail
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          python3 -I "$PB" proposal --plan pb/plan.json --onchain pb/onchain.json --settings pb/settings.json \
+            --program-buffer "$BUFFER" --idl-buffer "$IDL_BUFFER" --refund-to "$REFUND_TO" \
+            --governance "$GOVERNANCE" --repository "$GITHUB_REPOSITORY" --run-url "$run_url" --out-dir proposal
+          python3 -I "$PB" report --stage proposal --settings pb/settings.json --plan pb/plan.json \
+            --onchain pb/onchain.json --program-buffer "$BUFFER" --idl-buffer "$IDL_BUFFER" --refund-to "$REFUND_TO" \
+            --repository "$GITHUB_REPOSITORY" --out-dir proposal --out proposal/REPORT.md
+          cp pb/idl.json proposal/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: program-buffer-proposal
+          path: proposal/
+          if-no-files-found: error
+          retention-days: 90
+
+      # Only buffers the proposer still holds are closed; after the handoff they belong to the
+      # governance and only the abort proposal returns their rent.
+      - name: Close the proposer's buffers
+        if: (failure() || cancelled()) && steps.key.outcome == 'success'
+        shell: bash
+        env:
+          PB: ${{ steps.tools.outputs.script }}
+        run: python3 -I "$PB" close-buffers --rpc "$RPC_URL" --keypair "$RUNNER_TEMP/proposer.json" --refund-to "$REFUND_TO"
+
+      - name: Return the proposer's balance
+        if: always() && steps.key.outcome == 'success'
+        shell: bash
+        env:
+          PB: ${{ steps.tools.outputs.script }}
+        run: python3 -I "$PB" sweep --rpc "$RPC_URL" --keypair "$RUNNER_TEMP/proposer.json" --refund-to "$REFUND_TO"
+
+      - name: Remove the keys
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/proposer.json" "$RUNNER_TEMP/buffer.json" "$RUNNER_TEMP/idl-buffer.json"
