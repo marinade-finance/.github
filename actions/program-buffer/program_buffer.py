@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import difflib
 import hashlib
 import json
 import os
@@ -751,7 +752,8 @@ def canonical_json(raw: bytes) -> str:
 
 # -------------------------------------------------------------------- settings
 
-SETTING_KEYS = ("library-name", "base-image", "solana-verify-version", "cargo-args", "idl", "anchor-image")
+SETTING_KEYS = ("library-name", "base-image", "solana-verify-version", "cargo-args", "idl", "anchor-image",
+                "idl-committed")
 
 
 def cmd_settings(args):
@@ -846,6 +848,121 @@ def cmd_idl(args):
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(raw)
     log(f"IDL {out}: {len(raw)} bytes, sha256 {hashlib.sha256(raw).hexdigest()}")
+
+
+# ------------------------------------------------------------- IDL comparison
+
+IDL_SECTIONS = ("instructions", "accounts", "types", "events", "errors", "constants")
+DIFF_LINES_SHOWN = 300
+
+
+def _canonical(value) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def idl_changes(old: dict, new: dict) -> dict:
+    """What differs, by section and entry name, plus the other top-level keys that differ."""
+    changes = {}
+    for section in IDL_SECTIONS:
+        before = {e.get("name"): e for e in old.get(section) or [] if isinstance(e, dict)}
+        after = {e.get("name"): e for e in new.get(section) or [] if isinstance(e, dict)}
+        entry = {
+            "added": sorted(map(str, set(after) - set(before))),
+            "removed": sorted(map(str, set(before) - set(after))),
+            "changed": sorted(str(k) for k in set(before) & set(after)
+                              if _canonical(before[k]) != _canonical(after[k])),
+        }
+        if any(entry.values()):
+            changes[section] = {k: v for k, v in entry.items() if v}
+    other = sorted(k for k in set(old) | set(new)
+                   if k not in IDL_SECTIONS and _canonical(old.get(k)) != _canonical(new.get(k)))
+    if other:
+        changes["other keys"] = other
+    return changes
+
+
+def compare_idl(new_raw: bytes, old_raw: bytes, old_label: str, diff_path: Path) -> dict:
+    new, old = json.loads(new_raw), json.loads(old_raw)
+    if _canonical(new) == _canonical(old):
+        return {"equal": True}
+    pretty = lambda d: json.dumps(d, indent=2, sort_keys=True).splitlines()  # noqa: E731
+    diff = list(difflib.unified_diff(pretty(old), pretty(new), old_label, "generated", lineterm="", n=2))
+    diff_path.write_text("\n".join(diff) + "\n")
+    return {"equal": False, "changes": idl_changes(old, new), "diff": diff_path.name, "diff_lines": len(diff)}
+
+
+def cmd_idl_compare(args):
+    """The generated IDL against the IDL the repository commits and the one on chain."""
+    settings = read_json(args.settings)
+    generated = Path(args.idl)
+    out_dir = Path(args.out_dir)
+    result = {}
+    if not generated.is_file():
+        log("no IDL generated, nothing to compare")
+        write_json(str(out_dir / "idl-compare.json"), result)
+        return
+    raw = generated.read_bytes()
+    committed = settings.get("idl-committed")
+    if committed:
+        path = Path(args.workspace) / committed
+        if not path.is_file():
+            result["committed"] = {"path": committed, "missing": True}
+            annotate("warning", f"idl-committed {committed} is not in the built commit")
+        else:
+            result["committed"] = {"path": committed, **compare_idl(raw, path.read_bytes(), committed,
+                                                                     out_dir / "idl-committed.diff")}
+            if not result["committed"]["equal"]:
+                annotate("warning", f"The committed IDL {committed} differs from the one generated from this "
+                                    f"commit, which is what gets published: {result['committed']['changes']}")
+    entry = read_pm_account(Rpc(args.rpc), canonical_metadata_address(args.program))
+    if entry is None:
+        result["onchain"] = {"missing": True}
+    else:
+        result["onchain"] = compare_idl(raw, unpack_pm_content(entry), "on chain", out_dir / "idl-onchain.diff")
+    write_json(str(out_dir / "idl-compare.json"), result)
+    log(json.dumps(result, indent=2))
+
+
+def annotate(level: str, message: str):
+    print(f"::{level} title=IDL::{message}" if os.environ.get("GITHUB_ACTIONS") else f"{level}: {message}",
+          file=sys.stderr)
+
+
+def idl_comparison_section(compare: dict, out_dir: Path) -> list[str]:
+    lines = []
+
+    def describe(title: str, result: dict) -> list[str]:
+        if result.get("equal"):
+            return [f"- {title}: identical."]
+        out = [f"- {title}: **differs**."]
+        for section, entry in result.get("changes", {}).items():
+            if section == "other keys":
+                out.append(f"  - other keys: {', '.join(f'`{k}`' for k in entry)}")
+            else:
+                out.append(f"  - {section}: " + "; ".join(f"{kind} {', '.join(f'`{n}`' for n in names)}"
+                                                        for kind, names in entry.items()))
+        diff_file = out_dir / result.get("diff", "")
+        if result.get("diff") and diff_file.is_file():
+            diff = diff_file.read_text().splitlines()
+            shown = diff[:DIFF_LINES_SHOWN]
+            more = (f"\n... {len(diff) - DIFF_LINES_SHOWN} more lines in `{result['diff']}` of the artifact"
+                    if len(diff) > DIFF_LINES_SHOWN else "")
+            out += ["", "  <details><summary>diff</summary>", "", "  ```diff",
+                    *("  " + line for line in shown), "  ```" + more, "", "  </details>"]
+        return out
+
+    committed = compare.get("committed")
+    if committed:
+        if committed.get("missing"):
+            lines.append(f"- Committed `{committed['path']}`: not in the built commit.")
+        else:
+            lines += describe(f"Committed `{committed['path']}` against the generated IDL, which is what gets "
+                              "published", committed)
+    onchain = compare.get("onchain")
+    if onchain:
+        lines += (["- On chain: no IDL yet; the proposal creates it."] if onchain.get("missing")
+                  else describe("On chain against the generated IDL, what the proposal changes", onchain))
+    return ["## IDL", "", *lines, ""] if lines else []
 
 
 # ---------------------------------------------------------------- read / plan
@@ -1329,7 +1446,7 @@ def cmd_report(args):
         "| Setting | Value | From |",
         "| --- | --- | --- |",
     ]
-    for key in ("library-name", "base-image", "solana-verify-version", "cargo-args", "idl", "anchor-image"):
+    for key in SETTING_KEYS:
         if settings.get(key):
             lines.append(f"| {key} | `{settings[key]}` | {settings.get('source', {}).get(key, '')} |")
     lines += ["", f"Upgrade authority `{authority}`"
@@ -1347,11 +1464,13 @@ def cmd_report(args):
             lines += [grows + f" The proposal does it in {len(extend['steps'])} ExtendProgramChecked transactions "
                       "before the upgrade (a program extends once per block); the proposer prefunds the rent, "
                       "which stays in the program data also when the vote fails.", ""]
+    if plan.get("idl"):
+        idl = plan["idl"]
+        lines += [f"IDL: {idl['mode']} the canonical Program Metadata account `{idl['metadata']}` "
+                  f"({idl['bytes']} bytes, {idl['packed_bytes']} zlib).", ""]
+    if args.idl_compare and Path(args.idl_compare).is_file():
+        lines += idl_comparison_section(read_json(args.idl_compare), Path(args.idl_compare).parent)
     if args.stage == "build":
-        if plan.get("idl"):
-            idl = plan["idl"]
-            lines += [f"IDL: {idl['mode']} the canonical Program Metadata account `{idl['metadata']}` "
-                      f"({idl['bytes']} bytes, {idl['packed_bytes']} zlib).", ""]
         if args.dry_run:
             lines += ["**Dry run**: nothing was written. Run again with dry-run off to propose this build.", ""]
         elif plan.get("proposer"):
@@ -1467,6 +1586,13 @@ def main(argv=None):
     c.add_argument("--program", required=True)
     c.add_argument("--out", required=True)
 
+    c = command("idl-compare", cmd_idl_compare, rpc=True)
+    c.add_argument("--workspace", required=True)
+    c.add_argument("--settings", required=True)
+    c.add_argument("--program", required=True)
+    c.add_argument("--idl", required=True)
+    c.add_argument("--out-dir", required=True)
+
     c = command("onchain", cmd_onchain, rpc=True)
     c.add_argument("--program", required=True)
     c.add_argument("--governance", default="")
@@ -1530,6 +1656,7 @@ def main(argv=None):
 
     c = command("report", cmd_report)
     c.add_argument("--stage", choices=("build", "proposal"), required=True)
+    c.add_argument("--idl-compare", default="")
     c.add_argument("--dry-run", action="store_true")
     c.add_argument("--settings", required=True)
     c.add_argument("--plan", required=True)

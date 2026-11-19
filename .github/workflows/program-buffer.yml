@@ -50,7 +50,7 @@ on:
       settings-file:
         description: >-
           TOML read at `ref` whose keys (library-name, base-image, solana-verify-version, cargo-args,
-          idl, anchor-image) override the inputs of the same name.
+          idl, anchor-image, idl-committed) override the inputs of the same name.
         required: false
         default: .github/program-buffer.toml
         type: string
@@ -81,6 +81,13 @@ on:
         type: string
       anchor-image:
         description: Image for anchor idl build; derived from Anchor.toml [toolchain] anchor_version when empty.
+        required: false
+        default: ""
+        type: string
+      idl-committed:
+        description: >-
+          Path of an IDL the repository commits. The run compares it with the generated IDL (which is
+          what gets published) and warns with the difference.
         required: false
         default: ""
         type: string
@@ -177,11 +184,12 @@ jobs:
           CARGO_ARGS: ${{ inputs.cargo-args }}
           IDL: ${{ inputs.idl }}
           ANCHOR_IMAGE: ${{ inputs.anchor-image }}
+          IDL_COMMITTED: ${{ inputs.idl-committed }}
         run: |
           python3 -I "$PB" settings --workspace source --file "$SETTINGS_FILE" --out pb/settings.json \
             --library-name "$LIBRARY_NAME" --base-image "$BASE_IMAGE" \
             --solana-verify-version "$SOLANA_VERIFY_VERSION" --cargo-args "$CARGO_ARGS" \
-            --idl "$IDL" --anchor-image "$ANCHOR_IMAGE"
+            --idl "$IDL" --anchor-image "$ANCHOR_IMAGE" --idl-committed "$IDL_COMMITTED"
 
       - name: Pull build images
         shell: bash
@@ -237,6 +245,14 @@ jobs:
           PB: ${{ steps.tools.outputs.script }}
         run: python3 -I "$PB" onchain --rpc "$RPC_URL" --program "$PROGRAM_ID" --governance "$GOVERNANCE" --out pb/onchain.json
 
+      - name: Compare the IDL
+        shell: bash
+        env:
+          PB: ${{ steps.tools.outputs.script }}
+        run: |
+          python3 -I "$PB" idl-compare --rpc "$RPC_URL" --workspace source --settings pb/settings.json \
+            --program "$PROGRAM_ID" --idl pb/idl.json --out-dir pb
+
       - name: Funding plan
         id: plan
         shell: bash
@@ -253,7 +269,8 @@ jobs:
         run: |
           args=()
           [[ "$DRY_RUN" == "true" ]] && args+=(--dry-run)
-          python3 -I "$PB" report --stage build "${args[@]}" --settings pb/settings.json --plan pb/plan.json \
+          python3 -I "$PB" report --stage build "${args[@]}" --idl-compare pb/idl-compare.json \
+            --settings pb/settings.json --plan pb/plan.json \
             --onchain pb/onchain.json --refund-to "$REFUND_TO" --repository "$GITHUB_REPOSITORY" --out pb/build-report.md
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -396,7 +413,8 @@ jobs:
           python3 -I "$PB" proposal --plan pb/plan.json --onchain pb/onchain.json --settings pb/settings.json \
             --program-buffer "$BUFFER" --idl-buffer "$IDL_BUFFER" --refund-to "$REFUND_TO" \
             --governance "$GOVERNANCE" --repository "$GITHUB_REPOSITORY" --run-url "$run_url" --out-dir proposal
-          python3 -I "$PB" report --stage proposal --settings pb/settings.json --plan pb/plan.json \
+          python3 -I "$PB" report --stage proposal --idl-compare pb/idl-compare.json \
+            --settings pb/settings.json --plan pb/plan.json \
             --onchain pb/onchain.json --program-buffer "$BUFFER" --idl-buffer "$IDL_BUFFER" --refund-to "$REFUND_TO" \
             --repository "$GITHUB_REPOSITORY" --out-dir proposal --out proposal/REPORT.md
           cp pb/idl.json proposal/ 2>/dev/null || true

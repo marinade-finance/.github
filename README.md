@@ -294,6 +294,9 @@ jobs:
 | `cargo-args` | — | After `--` of `solana-verify build`; `{commit}` and `{commit_short}` (7 characters) are substituted, e.g. `--config env.GIT_REV='{commit_short}'` |
 | `idl` | `none` | `anchor` runs `anchor idl build` in `anchor-image`; a path takes a committed IDL JSON |
 | `anchor-image` | `solanafoundation/anchor:v<Anchor.toml anchor_version>` | Image for `anchor idl build` |
+| `idl-committed` | — | An IDL the repository keeps; the run compares it with the generated one |
+
+The published IDL is the one generated from the built commit. When the repository also commits one (`idl-committed`), the run compares the two and raises a warning annotation if they differ. The summary then lists the instructions, accounts, types, events and errors that differ, plus the diff. The generated IDL is also compared with the IDL on chain, which shows voters what the proposal changes. The full diffs are in the build artifact (`idl-committed.diff`, `idl-onchain.diff`).
 
 ### Tested, and what is not covered
 
