@@ -237,13 +237,21 @@ The run summary and the `program-buffer-proposal` artifact hold:
 - the proposal as a [spl-governance-cli](https://github.com/marinade-finance/spl-governance-cli) 2.x manifest (`proposal create-batch proposal.yaml`), with each instruction also listed as Realms custom-instruction base64;
 - `abort.yaml`, a proposal that closes the buffers and returns their rent if the vote fails.
 
-The proposal's transactions are:
+The proposal's transactions are, in order:
 
-1. BPF loader `Upgrade`, with the buffer lamports going to `refund-to`.
-2. IDL allocate and extends.
-3. IDL write from the buffer, initialize (or set-data on an existing IDL), and close the IDL buffer to `refund-to`.
+1. Program data extensions, only when the build outgrows the program data and the cluster has `ExtendProgramChecked` (see below).
+2. BPF loader `Upgrade`, with the buffer lamports going to `refund-to`.
+3. IDL allocate and extends.
+4. IDL write from the buffer, initialize (or set-data on an existing IDL), and close the IDL buffer to `refund-to`.
 
-A data transaction executed early fails without effect, and initialize always runs with its write.
+The governance runs each proposal transaction as one instruction, and its inner instructions may grow an account by at most 10,240 bytes in total. Every growth is therefore split into transactions of at most that size. A transaction executed out of order fails without effect, and initialize always runs in the same transaction as its write.
+
+### A build that outgrows its program data
+
+The program data must hold the new code before `Upgrade`. The plan grows it, and charges only the rent the account does not already hold. Programs deployed before the rent reduction often hold enough already. The rent stays with the program and is not refundable. How the extension happens depends on one feature gate, which the tool reads from the cluster:
+
+- **`ExtendProgramChecked` inactive** (mainnet as of November 2026; the gate `2oMRZEDW…` is not scheduled). Only the permissionless `ExtendProgram` exists, and the runtime refuses it inside an inner instruction, so no governance proposal can extend a program. The write job's proposer extends the program data before the vote, by at least 10,240 bytes (mainnet's minimum). This is irreversible but harmless: the deployed code stays as it is.
+- **`ExtendProgramChecked` active.** Only the upgrade authority can extend. The proposal carries one 10,240-byte `ExtendProgramChecked` per transaction before the upgrade, because a program extends once per block. The proposer prefunds the rent at the handoff, and it stays in the program data even if the vote fails.
 
 ### Setup per program repository
 
@@ -289,9 +297,19 @@ jobs:
 
 ### Tested, and what is not covered
 
-`actions/program-buffer/tests/local_validator_test.py` runs the tool on a `solana-test-validator` (Agave 4.x, the Program Metadata binary dumped from mainnet), with a local key standing in for the treasury. It covers: an upgrade with a first IDL, an IDL update that shrinks, an unchanged IDL, the abort proposal, IDLs over the 10 KiB realloc limit (create and update), and the failed-run cleanup. Its instruction encoders reproduce the instructions of an executed validator-bonds proposal.
+`actions/program-buffer/tests/local_validator_test.py` runs the tool on a `solana-test-validator` (Agave 4.x, with the Program Metadata binary dumped from mainnet). The proposal transactions are executed the way the governance executes them: through CPI, by `tests/cpi-executor`, signed by its treasury PDA. The suite runs twice, once with mainnet's feature set and once with every feature active. It covers:
 
-- A program that outgrows its ProgramData needs `ExtendProgram` first. The plan fails with the size instead of proposing it.
+- a build that outgrows its program data;
+- an upgrade with a first IDL, an IDL update that shrinks, and an unchanged IDL;
+- the abort proposal;
+- IDLs larger than one proposal transaction may grow an account, both create and update;
+- transactions executed out of order;
+- the failed-run cleanup.
+
+The instruction encoders reproduce the instructions of an executed validator-bonds proposal. The proposer's extension was also simulated on mainnet, where the local validator lacks the 10,240-byte minimum.
+
+Not covered:
+
 - Only SPL Governance authorities: liquid-staking-program, behind the multisig, keeps its own procedure.
 - The tool reaches its own script through `uses: $/actions/program-buffer` (runner 2.336.0+). actionlint 1.7.12 does not know this syntax yet.
 

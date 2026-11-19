@@ -43,7 +43,6 @@ BPF_BUFFER_HEADER = 37  # u32 tag, Option<Pubkey> authority
 BPF_PROGRAMDATA_HEADER = 45  # u32 tag, u64 slot, Option<Pubkey> authority
 # Program Metadata: buffer and metadata accounts share a 96-byte header
 PM_HEADER = 96
-PM_REALLOC_LIMIT = 10_240
 PM_IDL_SEED = b"idl"
 # Program Metadata enums
 PM_ENCODING_UTF8 = 1
@@ -53,6 +52,19 @@ PM_DATA_SOURCE_DIRECT = 0
 PM_DISC_BUFFER = 1
 PM_DISC_METADATA = 2
 PM_COMPRESSION_NAMES = {0: "none", 1: "gzip", 2: "zlib"}
+
+# Growing a program's data account. While this feature gate is inactive (mainnet, late 2026)
+# only ExtendProgram exists: permissionless, refused in inner instructions, so a governance
+# cannot run it and the proposer extends before the vote. Once active, only ExtendProgramChecked
+# exists, signed by the upgrade authority, so the proposal extends.
+FEATURE_EXTEND_PROGRAM_CHECKED = "2oMRZEDWT2tqtYMofhmmfQ8SsjqUFzT6sYXppQDavxwz"
+FEATURE_PROGRAM = "Feature111111111111111111111111111111111111"
+# ExtendProgram grows by at least this much, unless it grows the account to the maximum size.
+LOADER_MIN_EXTEND = 10_240
+# An inner instruction grows an account by at most this much per top-level instruction, so it
+# bounds what one governance-executed proposal transaction may add to any account.
+CPI_GROWTH_LIMIT = 10_240
+MAX_ACCOUNT_SIZE = 10 * 1024 * 1024
 
 # A Program Metadata write in a legacy transaction carries ~1000 bytes; keep a margin.
 PM_WRITE_CHUNK = 900
@@ -297,6 +309,25 @@ def ix_bpf_close_buffer(buffer: str, recipient: str, authority: str) -> Ix:
               f"BPF loader Close buffer {buffer}, lamports to {recipient}")
 
 
+def _payer_metas(payer: str | None) -> tuple[Meta, ...]:
+    """The optional accounts that pay rent the program data account does not hold yet."""
+    return (ro(SYSTEM_PROGRAM), signer(payer, True)) if payer else ()
+
+
+def ix_bpf_extend(program: str, additional: int, payer: str | None = None) -> Ix:
+    """ExtendProgram: permissionless, top-level only."""
+    accounts = (rw(programdata_address(program)), rw(program), *_payer_metas(payer))
+    return Ix(BPF_LOADER_UPGRADEABLE, accounts, struct.pack("<II", 6, additional),
+              f"BPF loader ExtendProgram {program} by {additional} bytes")
+
+
+def ix_bpf_extend_checked(program: str, authority: str, additional: int, payer: str | None = None) -> Ix:
+    """ExtendProgramChecked: signed by the upgrade authority, also as an inner instruction."""
+    accounts = (rw(programdata_address(program)), rw(program), signer(authority), *_payer_metas(payer))
+    return Ix(BPF_LOADER_UPGRADEABLE, accounts, struct.pack("<II", 9, additional),
+              f"BPF loader ExtendProgramChecked {program} by {additional} bytes")
+
+
 # Program Metadata (u8 discriminator). An absent optional account is passed as the
 # program's own address, as the generated client does.
 
@@ -359,7 +390,7 @@ def ix_pm_extend(account: str, authority: str, length: int, program: str | None 
 
 
 def pm_extend_chunks(length: int) -> list[int]:
-    return [min(PM_REALLOC_LIMIT, length - off) for off in range(0, length, PM_REALLOC_LIMIT)]
+    return [min(CPI_GROWTH_LIMIT, length - off) for off in range(0, length, CPI_GROWTH_LIMIT)]
 
 
 # ------------------------------------------------- SPL Governance InstructionData
@@ -582,7 +613,46 @@ def read_program(rpc: Rpc, program: str) -> dict:
         "authority": authority,
         "last_deploy_slot": slot,
         "capacity": len(code),
+        "programdata_size": len(data),
+        "programdata_lamports": pd["lamports"],
         "hash": executable_hash(code),
+    }
+
+
+def feature_active(rpc: Rpc, feature: str) -> bool:
+    account = rpc.account(feature)
+    return bool(account and account["owner"] == FEATURE_PROGRAM and account["data"][:1] == b"\x01")
+
+
+def extension_plan(rpc: Rpc, program: dict, so_len: int, checked: bool) -> dict | None:
+    """How the program data grows to hold `so_len` bytes of code, or None when it already does."""
+    growth = so_len - program["capacity"]
+    if growth <= 0:
+        return None
+    if checked:
+        # one ExtendProgramChecked per proposal transaction: a CPI grows an account by at most
+        # CPI_GROWTH_LIMIT, the minimum is LOADER_MIN_EXTEND, and a program extends once per block
+        mode, step = "proposal", CPI_GROWTH_LIMIT
+        additional = -(-growth // step) * step
+    else:
+        mode, step = "proposer", None
+        additional = max(growth, LOADER_MIN_EXTEND)
+    new_size = program["programdata_size"] + additional
+    if new_size > MAX_ACCOUNT_SIZE:
+        if program["programdata_size"] + growth > MAX_ACCOUNT_SIZE:
+            raise Failure(f"{so_len} bytes of code exceed the {MAX_ACCOUNT_SIZE}-byte account limit")
+        # growing to the maximum size is exempt from the minimum
+        additional = MAX_ACCOUNT_SIZE - program["programdata_size"]
+        new_size = MAX_ACCOUNT_SIZE
+    steps = [additional] if step is None else [min(step, additional - off) for off in range(0, additional, step)]
+    return {
+        "mode": mode,
+        "growth": growth,
+        "bytes": additional,
+        "steps": steps,
+        "new_capacity": new_size - BPF_PROGRAMDATA_HEADER,
+        # what the account does not hold yet; old programs often hold more than today's rent
+        "rent": max(0, rpc.rent(new_size) - program["programdata_lamports"]),
     }
 
 
@@ -797,6 +867,7 @@ def cmd_onchain(args):
         info["signer"] = info["authority"]
     else:
         raise Failure("--governance or --upgrade-authority is required")
+    info["extend_program_checked"] = feature_active(rpc, FEATURE_EXTEND_PROGRAM_CHECKED)
     metadata = canonical_metadata_address(args.program)
     entry = read_pm_account(rpc, metadata)
     info["idl"] = {"address": metadata, "exists": entry is not None}
@@ -817,14 +888,15 @@ def cmd_plan(args):
     onchain = read_json(args.onchain)
     code = Path(args.so).read_bytes()
     built_hash = executable_hash(code)
-    if len(code) > onchain["capacity"]:
-        raise Failure(f"the program grows from {onchain['capacity']} to {len(code)} bytes: the upgrade first "
-                      f"needs ExtendProgram by {len(code) - onchain['capacity']} bytes, which this workflow "
-                      "does not propose yet")
     costs = {"program_buffer_rent": rpc.rent(BPF_BUFFER_HEADER + len(code))}
     priority = args.compute_unit_price * COMPUTE_UNIT_LIMIT // 1_000_000
     per_tx = LAMPORTS_PER_SIGNATURE + priority
     txs = -(-len(code) // BPF_WRITE_CHUNK) + 2
+    extend = extension_plan(rpc, onchain, len(code), onchain.get("extend_program_checked", False))
+    if extend:
+        # stays with the program as its rent: spent, not refundable, also when the vote fails
+        costs["program_extend_rent"] = extend["rent"]
+        txs += 1
     idl = None
     if args.idl and Path(args.idl).is_file():
         raw = Path(args.idl).read_bytes()
@@ -836,13 +908,11 @@ def cmd_plan(args):
             idl["mode"] = "unchanged"
         if idl["mode"] != "unchanged":
             costs["idl_buffer_rent"] = rpc.rent(PM_HEADER + len(packed))
-            if idl["mode"] == "create":
-                # rent of the metadata account; it stays there as the IDL account's rent
-                costs["idl_metadata_rent"] = rpc.rent(PM_HEADER + len(packed))
-            else:
-                grow = len(packed) - onchain["idl"]["data_length"]
-                if grow > 0:
-                    costs["idl_metadata_extra_rent"] = rpc.rent(grow) - rpc.rent(0)
+            # rent of the metadata account the account does not hold yet; it stays there
+            held = onchain["idl"].get("lamports", 0) if idl["mode"] == "update" else rpc.balance(idl["metadata"])
+            rent = max(0, rpc.rent(PM_HEADER + len(packed)) - held)
+            if rent:
+                costs["idl_metadata_rent" if idl["mode"] == "create" else "idl_metadata_extra_rent"] = rent
             txs += 3 + -(-len(packed) // PM_WRITE_CHUNK)
     txs += 1  # handoff
     costs["fees_estimate"] = txs * per_tx + FEE_MARGIN_LAMPORTS
@@ -859,6 +929,7 @@ def cmd_plan(args):
         "refundable_lamports": refundable,
         "spent_lamports": required - refundable,
         "compute_unit_price": args.compute_unit_price,
+        "extend": extend,
         "idl": idl,
         "proposer": args.proposer,
         "refund_to": args.refund_to,
@@ -922,6 +993,30 @@ def cmd_write_idl_buffer(args):
     github_output(idl_buffer=buffer.pubkey)
 
 
+def cmd_extend(args):
+    """Proposer mode: grows the program data with the permissionless ExtendProgram, before the vote."""
+    rpc = Rpc(args.rpc)
+    payer = Keypair.load(args.keypair)
+    plan = read_json(args.plan)
+    if not plan.get("extend") or plan["extend"]["mode"] != "proposer":
+        log("the program data needs no extension by the proposer")
+        return
+    # from the chain again: anyone may have extended it since the build
+    current = read_program(rpc, plan["program"])
+    extend = extension_plan(rpc, current, plan["so_bytes"], checked=False)
+    if extend is None:
+        log(f"program data already holds {current['capacity']} bytes")
+        return
+    ix = ix_bpf_extend(plan["program"], extend["bytes"], payer.pubkey)
+    signature = send_and_confirm(rpc, payer, [ix], (), args.compute_unit_price,
+                                 f"extend the program data by {extend['bytes']} bytes")
+    after = read_program(rpc, plan["program"])
+    if after["capacity"] < plan["so_bytes"] or after["hash"] != current["hash"]:
+        raise Failure(f"after the extension the program reads {after}")
+    summary(f"Extended the program data of `{plan['program']}` by {extend['bytes']} bytes to "
+            f"{after['capacity']} ({signature}); {sol(extend['rent'])} SOL of rent stays with the program.")
+
+
 def check_idl_buffer(rpc: Rpc, address: str, packed: bytes, authority: str):
     entry = read_pm_account(rpc, address)
     if entry is None or entry["discriminator"] != PM_DISC_BUFFER:
@@ -934,20 +1029,23 @@ def check_idl_buffer(rpc: Rpc, address: str, packed: bytes, authority: str):
 
 
 def cmd_handoff(args):
-    """One transaction: both buffers to the upgrade authority, the IDL account rent prefunded."""
+    """One transaction: both buffers to the upgrade authority, the rent the proposal's
+    instructions need (IDL account, program data extension) prefunded."""
     rpc = Rpc(args.rpc)
     payer = Keypair.load(args.keypair)
     plan = read_json(args.plan)
     onchain = read_json(args.onchain)
     authority = onchain["signer"]
     ixs = [ix_bpf_set_buffer_authority(args.program_buffer, payer.pubkey, authority)]
+    if plan.get("extend") and plan["extend"]["mode"] == "proposal":
+        current = read_program(rpc, plan["program"])
+        extend = extension_plan(rpc, current, plan["so_bytes"], checked=True)
+        if extend and extend["rent"]:
+            ixs.append(ix_transfer(payer.pubkey, current["programdata"], extend["rent"]))
     idl = plan.get("idl")
     if args.idl_buffer and idl and idl["mode"] != "unchanged":
         ixs.append(ix_pm_set_authority(args.idl_buffer, payer.pubkey, authority))
-        prefund = plan["costs"].get("idl_metadata_rent", 0) + plan["costs"].get("idl_metadata_extra_rent", 0)
-        if idl["mode"] == "create":
-            current = rpc.balance(idl["metadata"])
-            prefund = max(0, prefund - current)
+        prefund = max(0, rpc.rent(PM_HEADER + idl["packed_bytes"]) - rpc.balance(idl["metadata"]))
         if prefund:
             ixs.append(ix_transfer(payer.pubkey, idl["metadata"], prefund))
     send_and_confirm(rpc, payer, ixs, (), args.compute_unit_price, "hand buffers to the upgrade authority")
@@ -1018,38 +1116,48 @@ def summary(markdown: str):
 def proposal_transactions(plan: dict, onchain: dict, program_buffer: str, idl_buffer: str | None,
                           refund_to: str) -> tuple[list[list[Ix]], list[list[Ix]]]:
     """The proposal's transactions, and the abort proposal that closes the buffers instead."""
+    # The governance executes a proposal transaction as one top-level instruction whose inner
+    # instructions may grow any account by CPI_GROWTH_LIMIT bytes in total, so every growth is
+    # split into transactions of at most that. Sizing transactions come first: one executed out of
+    # order fails without effect, and nothing that needs the size runs before it.
     program = onchain["program"]
     programdata = onchain["programdata"]
     authority = onchain["signer"]
-    upgrade = [[ix_bpf_upgrade(program, program_buffer, refund_to, authority)]]
+    transactions: list[list[Ix]] = []
+    extend = plan.get("extend")
+    if extend and extend["mode"] == "proposal":
+        # its rent was prefunded at the handoff; a program extends once per block, so these
+        # run one transaction at a time, which the governance does anyway
+        transactions += [[ix_bpf_extend_checked(program, authority, n)] for n in extend["steps"]]
+    transactions.append([ix_bpf_upgrade(program, program_buffer, refund_to, authority)])
     abort = [ix_bpf_close_buffer(program_buffer, refund_to, authority)]
     idl = plan.get("idl")
     if idl_buffer and idl and idl["mode"] != "unchanged":
         metadata = idl["metadata"]
-        packed_len = idl["packed_bytes"]
-        # Sizing first, then the data: a data transaction executed too early fails without effect,
-        # while initialize must never run before its write, so those two share one transaction.
-        # At most 3 extends per transaction keeps every insert within one legacy transaction.
+        target = PM_HEADER + idl["packed_bytes"]
         if idl["mode"] == "create":
-            extends = (pm_extend_chunks(packed_len) if PM_HEADER + packed_len > PM_REALLOC_LIMIT else [])
-            sizing = [ix_pm_allocate(metadata, authority, program, programdata, PM_IDL_SEED)]
+            # allocate creates the PDA with its header, the extends make room for the data
+            first = min(target, CPI_GROWTH_LIMIT) - PM_HEADER
+            sizing = [[ix_pm_allocate(metadata, authority, program, programdata, PM_IDL_SEED)]
+                      + ([ix_pm_extend(metadata, authority, first, program, programdata)] if first else [])]
+            sizing += [[ix_pm_extend(metadata, authority, n, program, programdata)]
+                       for n in pm_extend_chunks(target - PM_HEADER - first)]
+            # initialize must never run before its write: one transaction
             data = [ix_pm_write(metadata, authority, 0, source_buffer=idl_buffer),
                     ix_pm_initialize(metadata, authority, program, programdata, PM_IDL_SEED),
                     ix_pm_close(idl_buffer, authority, refund_to)]
         else:
-            grow = packed_len - onchain["idl"]["data_length"]
-            extends = pm_extend_chunks(grow) if grow > PM_REALLOC_LIMIT else []
-            sizing = []
+            grow = target - onchain["idl"]["size"]
+            # set-data grows the account itself when that fits one transaction
+            sizing = ([[ix_pm_extend(metadata, authority, n, program, programdata)] for n in pm_extend_chunks(grow)]
+                      if grow > CPI_GROWTH_LIMIT else [])
             data = [ix_pm_set_data(metadata, authority, idl_buffer, program, programdata),
                     ix_pm_close(idl_buffer, authority, refund_to)]
             if grow < 0:
                 data.append(ix_pm_trim(metadata, authority, program, programdata, refund_to))
-        sizing += [ix_pm_extend(metadata, authority, n, program, programdata) for n in extends]
-        for start in range(0, len(sizing), 4):
-            upgrade.append(sizing[start:start + 4])
-        upgrade.append(data)
+        transactions += sizing + [data]
         abort.append(ix_pm_close(idl_buffer, authority, refund_to))
-    return upgrade, [abort]
+    return transactions, [abort]
 
 
 def yaml_quote(value: str) -> str:
@@ -1226,6 +1334,19 @@ def cmd_report(args):
             lines.append(f"| {key} | `{settings[key]}` | {settings.get('source', {}).get(key, '')} |")
     lines += ["", f"Upgrade authority `{authority}`"
               + (f": native treasury of governance `{gov['governance']}` (realm `{gov['realm']}`)" if gov else ""), ""]
+    extend = plan.get("extend")
+    if extend:
+        grows = (f"The build is {plan['so_bytes']} bytes, {extend['growth']} more than the program data holds "
+                 f"({plan['capacity']}), so it grows by {extend['bytes']} bytes to {extend['new_capacity']}; "
+                 f"the {sol(extend['rent'])} SOL of rent this needs stays with the program.")
+        if extend["mode"] == "proposer":
+            lines += [grows + " On this cluster only the permissionless ExtendProgram exists and the runtime "
+                      "refuses it inside a governance transaction, so the proposer extends the program data "
+                      "before the vote. That is irreversible but harmless: the deployed code stays as it is.", ""]
+        else:
+            lines += [grows + f" The proposal does it in {len(extend['steps'])} ExtendProgramChecked transactions "
+                      "before the upgrade (a program extends once per block); the proposer prefunds the rent, "
+                      "which stays in the program data also when the vote fails.", ""]
     if args.stage == "build":
         if plan.get("idl"):
             idl = plan["idl"]
@@ -1375,6 +1496,10 @@ def main(argv=None):
     c.add_argument("--buffer-keypair", required=True)
     c.add_argument("--compute-unit-price", type=int, default=0)
     c.add_argument("--out", required=True)
+
+    c = command("extend", cmd_extend, rpc=True, keypair=True)
+    c.add_argument("--plan", required=True)
+    c.add_argument("--compute-unit-price", type=int, default=0)
 
     c = command("handoff", cmd_handoff, rpc=True, keypair=True)
     c.add_argument("--plan", required=True)

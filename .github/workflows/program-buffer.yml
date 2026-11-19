@@ -362,6 +362,16 @@ jobs:
           fi
           echo "idl-buffer=$(cat pb/idl-buffer.txt 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
 
+      # Only when the code outgrows the program data and the cluster lets nobody but the proposer
+      # extend it (ExtendProgramChecked inactive); otherwise the proposal extends, or nothing does.
+      - name: Extend the program data
+        shell: bash
+        env:
+          PB: ${{ steps.tools.outputs.script }}
+        run: |
+          python3 -I "$PB" extend --rpc "$RPC_URL" --keypair "$RUNNER_TEMP/proposer.json" --plan pb/plan.json \
+            --compute-unit-price "$CU_PRICE"
+
       - name: Hand the buffers to the upgrade authority
         shell: bash
         env:

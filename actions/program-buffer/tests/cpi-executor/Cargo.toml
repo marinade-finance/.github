@@ -1,0 +1,14 @@
+[package]
+name = "cpi-executor"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Test stand-in for SPL Governance ExecuteTransaction"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+solana-program = "=2.3.0"
+
+[workspace]
