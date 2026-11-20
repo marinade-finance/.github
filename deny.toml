@@ -10,6 +10,12 @@ ignore = [
   "RUSTSEC-2026-0099",
   "RUSTSEC-2026-0104",
 
+  # rustls 0.21 / rustls-webpki 0.101 / webpki-roots 0.24-0.25 come from tungstenite 0.20 in solana-pubsub-client <=3.0; fixes exist only in rustls 0.23, webpki 0.103 and webpki-roots 1.0. RETIRE when every repo is on solana-pubsub-client >=3.1.
+  "RUSTSEC-2026-0346",
+  "RUSTSEC-2026-0349",
+  "RUSTSEC-2026-0381",
+  "RUSTSEC-2026-0382",
+
   # curve25519-dalek 3.2.x / ed25519-dalek 1.0.1, reached only through monolithic solana-sdk <=2.x (25 repos). RETIRE per repo on moving to the granular solana-* crates.
   "RUSTSEC-2024-0344",
   "RUSTSEC-2022-0093",
