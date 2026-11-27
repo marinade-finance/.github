@@ -1,14 +1,7 @@
 name: Program buffer (reusable)
 
-# Prepares a program upgrade for an SPL Governance vote, see README "Program buffer proposals".
-# build:  verifiable build of `ref`, its IDL, what is deployed, the funding plan. No secrets.
-#         A dry run stops here, which is how a past commit is checked against the deployment.
-# write:  waits for the environment approval ("the proposer is funded"), then writes the program
-#         and IDL buffers with the proposer key, hands both to the upgrade authority and renders
-#         the proposal payloads. It runs no code of the built repository.
-#
-# Declare `concurrency` in the caller and share its group with the program-buffer-close caller:
-# a failed run closes every buffer the proposer key still holds.
+# See README "Program buffer proposals". Callers share one `concurrency` group with
+# program-buffer-close: a failed run closes every buffer the proposer key holds.
 
 permissions:
   contents: read
@@ -162,7 +155,6 @@ jobs:
             echo "::error::refund-to must not be the proposer: the end-of-run sweep would return nothing"; exit 1
           fi
 
-      # `persist-credentials: false`: the build runs the repository's build scripts, so no token is left in .git/config.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
@@ -294,8 +286,6 @@ jobs:
       REFUND_TO: ${{ inputs.refund-to }}
       CU_PRICE: ${{ inputs.compute-unit-price }}
     steps:
-      # The environment should allow only the default branch; this holds even if it does not.
-      # It is where the workflow file comes from, not what is built: any `ref` can still be proposed.
       - name: Require the default branch
         if: github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
         shell: bash
@@ -379,8 +369,6 @@ jobs:
           fi
           echo "idl-buffer=$(cat pb/idl-buffer.txt 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
 
-      # Only when the code outgrows the program data and the cluster lets nobody but the proposer
-      # extend it (ExtendProgramChecked inactive); otherwise the proposal extends, or nothing does.
       - name: Extend the program data
         shell: bash
         env:
@@ -426,8 +414,6 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-      # Only buffers the proposer still holds are closed; after the handoff they belong to the
-      # governance and only the abort proposal returns their rent.
       - name: Close the proposer's buffers
         if: (failure() || cancelled()) && steps.key.outcome == 'success'
         shell: bash

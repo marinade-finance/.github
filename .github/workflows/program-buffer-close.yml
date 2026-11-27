@@ -1,12 +1,6 @@
 name: Program buffer close (reusable)
 
-# Returns what the proposer key holds: closes every BPF loader and Program Metadata buffer whose
-# authority is still the proposer, then sweeps its balance to `refund-to`. The program-buffer
-# write job does this itself when it fails; this is for a run whose runner was lost mid-way.
-# Buffers already handed to the governance need the abort proposal of their run instead.
-#
-# Share the caller's `concurrency` group with the program-buffer caller, so this never closes
-# the buffer of a run in progress.
+# Closes the buffers the proposer still holds and sweeps its balance, after a lost run.
 
 permissions:
   contents: read

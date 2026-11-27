@@ -1,14 +1,7 @@
 #!/usr/bin/env python3
-"""Tooling of the program-buffer workflow (see README "Program buffer proposals").
+"""Tooling of the program-buffer workflows (see README "Program buffer proposals").
 
-Prepares a Solana program upgrade for an SPL Governance vote: resolves the build
-settings of the commit, reads what is deployed, plans the funding, writes the IDL
-buffer, hands both buffers to the governance, and renders the proposal payloads
-and the verification instructions.
-
-Standard library only, except the commands that sign (write-idl-buffer, handoff,
-close-buffers, sweep), which need the `cryptography` package for ed25519.
-The program buffer itself is written by `solana program write-buffer`.
+Standard library only; the commands that sign need the `cryptography` package.
 """
 
 from __future__ import annotations
@@ -39,13 +32,10 @@ SPL_GOVERNANCE = "GovMaiHfpVPw8BAM1mbdzgmSZYDw2tdP32J2fapoQoYs"
 SYSVAR_RENT = "SysvarRent111111111111111111111111111111111"
 SYSVAR_CLOCK = "SysvarC1ock11111111111111111111111111111111"
 
-# BPF upgradeable loader account headers
 BPF_BUFFER_HEADER = 37  # u32 tag, Option<Pubkey> authority
 BPF_PROGRAMDATA_HEADER = 45  # u32 tag, u64 slot, Option<Pubkey> authority
-# Program Metadata: buffer and metadata accounts share a 96-byte header
 PM_HEADER = 96
 PM_IDL_SEED = b"idl"
-# Program Metadata enums
 PM_ENCODING_UTF8 = 1
 PM_COMPRESSION_ZLIB = 2
 PM_FORMAT_JSON = 1
@@ -54,26 +44,20 @@ PM_DISC_BUFFER = 1
 PM_DISC_METADATA = 2
 PM_COMPRESSION_NAMES = {0: "none", 1: "gzip", 2: "zlib"}
 
-# Growing a program's data account. While this feature gate is inactive (mainnet, late 2026)
-# only ExtendProgram exists: permissionless, refused in inner instructions, so a governance
-# cannot run it and the proposer extends before the vote. Once active, only ExtendProgramChecked
-# exists, signed by the upgrade authority, so the proposal extends.
+# Inactive: only the permissionless ExtendProgram, refused in CPI, so the proposer extends.
+# Active: only ExtendProgramChecked, signed by the upgrade authority, so the proposal extends.
 FEATURE_EXTEND_PROGRAM_CHECKED = "2oMRZEDWT2tqtYMofhmmfQ8SsjqUFzT6sYXppQDavxwz"
 FEATURE_PROGRAM = "Feature111111111111111111111111111111111111"
-# ExtendProgram grows by at least this much, unless it grows the account to the maximum size.
+# unless the account grows to the maximum size
 LOADER_MIN_EXTEND = 10_240
-# An inner instruction grows an account by at most this much per top-level instruction, so it
-# bounds what one governance-executed proposal transaction may add to any account.
+# per account per top-level instruction, so per governance-executed proposal transaction
 CPI_GROWTH_LIMIT = 10_240
 MAX_ACCOUNT_SIZE = 10 * 1024 * 1024
 
-# A Program Metadata write in a legacy transaction carries ~1000 bytes; keep a margin.
 PM_WRITE_CHUNK = 900
-# `solana program write-buffer` sends ~1 KiB of the program per transaction.
 BPF_WRITE_CHUNK = 1000
 LAMPORTS_PER_SIGNATURE = 5000
 COMPUTE_UNIT_LIMIT = 200_000
-# Covers the cleanup/sweep transfers and a retried write or two.
 FEE_MARGIN_LAMPORTS = 10_000_000
 LAMPORTS_PER_SOL = 1_000_000_000
 
@@ -82,7 +66,6 @@ class Failure(Exception):
     """An error the workflow reports as an annotation and fails on."""
 
 
-# ---------------------------------------------------------------- base58, PDAs
 
 _B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
@@ -174,7 +157,6 @@ def sol(lamports: int) -> str:
     return f"{lamports / LAMPORTS_PER_SOL:.9f}".rstrip("0").rstrip(".")
 
 
-# ------------------------------------------------------------------------ RPC
 
 
 class Rpc:
@@ -197,7 +179,6 @@ class Rpc:
                 continue
             if "error" in reply:
                 err = reply["error"]
-                # 429 and node-behind errors are transient
                 if attempt < attempts - 1 and err.get("code") in (-32005, -32014, -32016, 429):
                     time.sleep(delay)
                     delay *= 2
@@ -242,7 +223,6 @@ class RpcError(Failure):
         super().__init__(detail)
 
 
-# --------------------------------------------------------------- instructions
 
 
 @dataclass(frozen=True)
@@ -290,7 +270,6 @@ def ix_compute_unit_price(micro_lamports: int) -> Ix:
     return Ix(COMPUTE_BUDGET, (), struct.pack("<BQ", 3, micro_lamports))
 
 
-# BPF upgradeable loader (UpgradeableLoaderInstruction, bincode u32 tag)
 
 
 def ix_bpf_upgrade(program: str, buffer: str, spill: str, authority: str) -> Ix:
@@ -329,8 +308,7 @@ def ix_bpf_extend_checked(program: str, authority: str, additional: int, payer: 
               f"BPF loader ExtendProgramChecked {program} by {additional} bytes")
 
 
-# Program Metadata (u8 discriminator). An absent optional account is passed as the
-# program's own address, as the generated client does.
+# An absent optional Program Metadata account is passed as the program's own address.
 
 
 def _pm_opt(key: str | None) -> Meta:
@@ -394,7 +372,6 @@ def pm_extend_chunks(length: int) -> list[int]:
     return [min(CPI_GROWTH_LIMIT, length - off) for off in range(0, length, CPI_GROWTH_LIMIT)]
 
 
-# ------------------------------------------------- SPL Governance InstructionData
 
 
 def encode_instruction_data(ix: Ix) -> str:
@@ -434,7 +411,6 @@ def decode_proposal_transaction(raw: bytes) -> list[Ix]:
     return ixs
 
 
-# ---------------------------------------------------------------- transactions
 
 
 def _compact_u16(n: int) -> bytes:
@@ -556,7 +532,6 @@ def send_and_confirm(rpc: Rpc, payer: Keypair, ixs: list[Ix], extra_signers: tup
             rpc.call("sendTransaction", [encoded, {"encoding": "base64", "preflightCommitment": "confirmed",
                                                   "maxRetries": 0}])
         except RpcError as e:
-            # an RPC node behind the one that served the blockhash
             if "Blockhash not found" in str(e) and attempt < attempts - 1:
                 log(f"{label}: blockhash not found yet, retrying")
                 sent.pop()
@@ -587,7 +562,6 @@ def send_and_confirm(rpc: Rpc, payer: Keypair, ixs: list[Ix], extra_signers: tup
     raise Failure(f"{label}: not confirmed after {attempts} attempts (signatures {sent})")
 
 
-# ------------------------------------------------------------- on-chain state
 
 
 def log(message: str):
@@ -631,8 +605,7 @@ def extension_plan(rpc: Rpc, program: dict, so_len: int, checked: bool) -> dict 
     if growth <= 0:
         return None
     if checked:
-        # one ExtendProgramChecked per proposal transaction: a CPI grows an account by at most
-        # CPI_GROWTH_LIMIT, the minimum is LOADER_MIN_EXTEND, and a program extends once per block
+        # one per proposal transaction: a program extends once per block
         mode, step = "proposal", CPI_GROWTH_LIMIT
         additional = -(-growth // step) * step
     else:
@@ -652,7 +625,6 @@ def extension_plan(rpc: Rpc, program: dict, so_len: int, checked: bool) -> dict 
         "bytes": additional,
         "steps": steps,
         "new_capacity": new_size - BPF_PROGRAMDATA_HEADER,
-        # what the account does not hold yet; old programs often hold more than today's rent
         "rent": max(0, rpc.rent(new_size) - program["programdata_lamports"]),
     }
 
@@ -720,7 +692,6 @@ def read_governance(rpc: Rpc, governance: str) -> dict:
     return info
 
 
-# ----------------------------------------------------------------- utilities
 
 
 def write_json(path: str, value):
@@ -750,7 +721,6 @@ def canonical_json(raw: bytes) -> str:
     return hashlib.sha256(json.dumps(json.loads(raw), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-# -------------------------------------------------------------------- settings
 
 SETTING_KEYS = ("library-name", "base-image", "solana-verify-version", "cargo-args", "idl", "anchor-image",
                 "idl-committed")
@@ -850,7 +820,6 @@ def cmd_idl(args):
     log(f"IDL {out}: {len(raw)} bytes, sha256 {hashlib.sha256(raw).hexdigest()}")
 
 
-# ------------------------------------------------------------- IDL comparison
 
 IDL_SECTIONS = ("instructions", "accounts", "types", "events", "errors", "constants")
 DIFF_LINES_SHOWN = 300
@@ -965,7 +934,6 @@ def idl_comparison_section(compare: dict, out_dir: Path) -> list[str]:
     return ["## IDL", "", *lines, ""] if lines else []
 
 
-# ---------------------------------------------------------------- read / plan
 
 
 def cmd_onchain(args):
@@ -1011,7 +979,6 @@ def cmd_plan(args):
     txs = -(-len(code) // BPF_WRITE_CHUNK) + 2
     extend = extension_plan(rpc, onchain, len(code), onchain.get("extend_program_checked", False))
     if extend:
-        # stays with the program as its rent: spent, not refundable, also when the vote fails
         costs["program_extend_rent"] = extend["rent"]
         txs += 1
     idl = None
@@ -1025,7 +992,6 @@ def cmd_plan(args):
             idl["mode"] = "unchanged"
         if idl["mode"] != "unchanged":
             costs["idl_buffer_rent"] = rpc.rent(PM_HEADER + len(packed))
-            # rent of the metadata account the account does not hold yet; it stays there
             held = onchain["idl"].get("lamports", 0) if idl["mode"] == "update" else rpc.balance(idl["metadata"])
             rent = max(0, rpc.rent(PM_HEADER + len(packed)) - held)
             if rent:
@@ -1059,7 +1025,6 @@ def cmd_plan(args):
                   upgrade_needed=str(built_hash != onchain["hash"]).lower())
 
 
-# ---------------------------------------------------------------- write steps
 
 
 def cmd_check_funds(args):
@@ -1118,7 +1083,6 @@ def cmd_extend(args):
     if not plan.get("extend") or plan["extend"]["mode"] != "proposer":
         log("the program data needs no extension by the proposer")
         return
-    # from the chain again: anyone may have extended it since the build
     current = read_program(rpc, plan["program"])
     extend = extension_plan(rpc, current, plan["so_bytes"], checked=False)
     if extend is None:
@@ -1212,8 +1176,7 @@ def cmd_sweep(args):
     if amount <= 0:
         log(f"proposer {payer.pubkey} holds {sol(balance)} SOL, nothing to sweep")
         return
-    # no compute budget instructions, so the fee is exactly one signature; a retry after the
-    # transfer landed fails on the then-empty balance instead of paying twice
+    # without compute budget instructions the fee is exactly one signature
     signature = send_and_confirm(rpc, payer, [ix_transfer(payer.pubkey, args.refund_to, amount)],
                                  label="sweep", compute_budget=False)
     summary(f"Swept {sol(amount)} SOL from proposer `{payer.pubkey}` to `{args.refund_to}` ({signature})")
@@ -1227,24 +1190,19 @@ def summary(markdown: str):
             f.write(markdown + "\n\n")
 
 
-# ------------------------------------------------------------------- proposal
 
 
 def proposal_transactions(plan: dict, onchain: dict, program_buffer: str, idl_buffer: str | None,
                           refund_to: str) -> tuple[list[list[Ix]], list[list[Ix]]]:
     """The proposal's transactions, and the abort proposal that closes the buffers instead."""
-    # The governance executes a proposal transaction as one top-level instruction whose inner
-    # instructions may grow any account by CPI_GROWTH_LIMIT bytes in total, so every growth is
-    # split into transactions of at most that. Sizing transactions come first: one executed out of
-    # order fails without effect, and nothing that needs the size runs before it.
+    # Each transaction grows an account by at most CPI_GROWTH_LIMIT; sizing comes first, and a
+    # transaction executed out of order fails without effect.
     program = onchain["program"]
     programdata = onchain["programdata"]
     authority = onchain["signer"]
     transactions: list[list[Ix]] = []
     extend = plan.get("extend")
     if extend and extend["mode"] == "proposal":
-        # its rent was prefunded at the handoff; a program extends once per block, so these
-        # run one transaction at a time, which the governance does anyway
         transactions += [[ix_bpf_extend_checked(program, authority, n)] for n in extend["steps"]]
     transactions.append([ix_bpf_upgrade(program, program_buffer, refund_to, authority)])
     abort = [ix_bpf_close_buffer(program_buffer, refund_to, authority)]
@@ -1253,7 +1211,6 @@ def proposal_transactions(plan: dict, onchain: dict, program_buffer: str, idl_bu
         metadata = idl["metadata"]
         target = PM_HEADER + idl["packed_bytes"]
         if idl["mode"] == "create":
-            # allocate creates the PDA with its header, the extends make room for the data
             first = min(target, CPI_GROWTH_LIMIT) - PM_HEADER
             sizing = [[ix_pm_allocate(metadata, authority, program, programdata, PM_IDL_SEED)]
                       + ([ix_pm_extend(metadata, authority, first, program, programdata)] if first else [])]
@@ -1265,7 +1222,6 @@ def proposal_transactions(plan: dict, onchain: dict, program_buffer: str, idl_bu
                     ix_pm_close(idl_buffer, authority, refund_to)]
         else:
             grow = target - onchain["idl"]["size"]
-            # set-data grows the account itself when that fits one transaction
             sizing = ([[ix_pm_extend(metadata, authority, n, program, programdata)] for n in pm_extend_chunks(grow)]
                       if grow > CPI_GROWTH_LIMIT else [])
             data = [ix_pm_set_data(metadata, authority, idl_buffer, program, programdata),
@@ -1326,7 +1282,6 @@ def cmd_proposal(args):
     log(f"wrote {out}/proposal.yaml, abort.yaml, payloads.json")
 
 
-# --------------------------------------------------------------------- report
 
 
 def verification_section(settings: dict, plan: dict, args, program_buffer: str | None,
@@ -1540,7 +1495,6 @@ def cmd_report(args):
     summary(text)
 
 
-# ----------------------------------------------------------------------- main
 
 
 def cmd_decode(args):
